@@ -9,7 +9,7 @@ from sailwind_mod_sync.config import AppConfig
 from sailwind_mod_sync.http_util import HttpClient
 from sailwind_mod_sync.library.special_mods import COOP_GUID
 from sailwind_mod_sync.manager import Manager
-from sailwind_mod_sync.models import PinnedMod
+from sailwind_mod_sync.models import PinnedMod, RemoteRelease
 from sailwind_mod_sync.paths import AppPaths
 
 
@@ -201,6 +201,44 @@ def test_add_library_mod_replaces_other_version(paths: AppPaths, tmp_path: Path)
     assert [mod.version for mod in refreshed.mods if mod.guid == pinned.guid] == ["0.4.0"]
     plugin = manager.packs.plugins_dir(pack.id) / "Dizzy.Gamma" / "Dizzy.Gamma.dll"
     assert plugin.read_bytes() == b"0.4.0"
+    manager.close()
+
+
+def test_set_pack_mod_version_switches_library_copy(paths: AppPaths, tmp_path: Path) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    guid = "com.dizzy.sailwind.gamma"
+    for version in ("0.3.3", "0.4.0"):
+        archive = _zip_with(tmp_path / f"gamma-{version}.zip", {"Dizzy.Gamma/Dizzy.Gamma.dll": version.encode()})
+        manager.library.ingest_mod_zip(
+            guid,
+            version,
+            archive,
+            version_raw=f"v{version}",
+            repo="https://github.com/foxyv/dizzy_sailwind_mods",
+            source_url=f"https://example/gamma-{version}.zip",
+        )
+    pack = manager.packs.create("Version pick")
+    manager.set_pack_mod_version(pack.id, guid, "0.3.3", "v0.3.3")
+    manager.set_mod_enabled(pack.id, guid, False)
+    pinned = manager.set_pack_mod_version(pack.id, guid, "0.4.0", "v0.4.0")
+    assert pinned.version == "0.4.0"
+    assert not pinned.enabled
+    plugin = manager.packs.plugins_dir(pack.id) / "Dizzy.Gamma" / "Dizzy.Gamma.dll"
+    assert not plugin.exists()
+    manager.close()
+
+
+def test_list_remote_mod_versions_skips_unparsed_and_duplicates(paths: AppPaths) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    releases = [
+        RemoteRelease(tag="v1.2.0", name="1.2.0", assets=[]),
+        RemoteRelease(tag="v1.2.0", name="again", assets=[]),
+        RemoteRelease(tag="nightly", name="nightly", assets=[]),
+        RemoteRelease(tag="v1.0.0", name="old", assets=[]),
+    ]
+    with patch("sailwind_mod_sync.manager.list_releases", return_value=releases):
+        rows = manager.list_remote_mod_versions("https://github.com/example/mod")
+    assert rows == [("1.2.0", "v1.2.0"), ("1.0.0", "v1.0.0")]
     manager.close()
 
 
@@ -415,4 +453,41 @@ def test_local_mod_details_lists_installed_versions(paths: AppPaths, tmp_path: P
     assert details.installed_versions == ["1.1.0", "1.0.0"]
     assert details.catalog_latest == "v1.2.0"
     assert details.pack_pins == [("Crew", "1.1.0")]
+    manager.close()
+
+
+def test_set_mod_alias_persists_and_overrides_name(paths: AppPaths, tmp_path: Path) -> None:
+    from sailwind_mod_sync.library.aliases import load_aliases
+    from sailwind_mod_sync.models import CatalogEntry
+
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    archive = _zip_with(tmp_path / "gamma.zip", {"Dizzy.Gamma/Dizzy.Gamma.dll": b"MZ"})
+    manager.library.ingest_mod_zip(
+        "com.dizzy.sailwind.gamma",
+        "0.3.3",
+        archive,
+        version_raw="v0.3.3",
+        repo="https://github.com/foxyv/dizzy_sailwind_mods",
+        source_url="https://example/gamma.zip",
+    )
+    manager.catalog = [
+        CatalogEntry(
+            repo="https://github.com/foxyv/dizzy_sailwind_mods",
+            guids=["com.dizzy.sailwind.gamma", "com.dizzy.sailwind.calendar"],
+            primary_guid="com.dizzy.sailwind.gamma",
+            name="dizzy_sailwind_mods",
+            latest_raw="v0.3.3",
+            latest_version="0.3.3",
+            available=True,
+        )
+    ]
+    assert manager.mod_display_name("com.dizzy.sailwind.gamma") == "Dizzy.Gamma"
+    shown = manager.set_mod_alias("com.dizzy.sailwind.gamma", "Dizzy Gamma")
+    assert shown == "Dizzy Gamma"
+    assert load_aliases(paths)["com.dizzy.sailwind.gamma"] == "Dizzy Gamma"
+    details = manager.local_mod_details("com.dizzy.sailwind.gamma", "0.3.3")
+    assert details.name == "Dizzy Gamma"
+    cleared = manager.set_mod_alias("com.dizzy.sailwind.gamma", "")
+    assert cleared == "Dizzy.Gamma"
+    assert "com.dizzy.sailwind.gamma" not in load_aliases(paths)
     manager.close()

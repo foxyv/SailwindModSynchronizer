@@ -27,6 +27,7 @@ from sailwind_mod_sync.catalog.mvc import find_entry
 from sailwind_mod_sync.constants import APP_NAME
 from sailwind_mod_sync.game.backup import BackupError, inspect_bepinex_zip
 from sailwind_mod_sync.manager import Manager
+from sailwind_mod_sync.models import parse_mod_version, version_key
 from sailwind_mod_sync.ui.catalog_view import CatalogView
 from sailwind_mod_sync.ui.library_view import LibraryView
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
@@ -35,9 +36,31 @@ from sailwind_mod_sync.ui.pack_view import PackView
 from sailwind_mod_sync.ui.progress_dialog import BusyDialog
 from sailwind_mod_sync.ui.repo_dialog import RepoUrlDialog
 from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
+from sailwind_mod_sync.ui.version_dialog import SelectVersionDialog
 from sailwind_mod_sync.ui.workers import TaskBridge, run_background
 
 log = logging.getLogger(__name__)
+
+PLAY_BUTTON_STYLE = """
+QPushButton {
+    background-color: #2e7d32;
+    color: white;
+    font-weight: 600;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 12px;
+}
+QPushButton:hover {
+    background-color: #388e3c;
+}
+QPushButton:pressed {
+    background-color: #1b5e20;
+}
+QPushButton:disabled {
+    background-color: #81c784;
+    color: #e8f5e9;
+}
+"""
 
 
 class MainWindow(QMainWindow):
@@ -57,6 +80,7 @@ class MainWindow(QMainWindow):
 
         self.play_button = QPushButton("Play")
         self.play_button.setMinimumHeight(48)
+        self.play_button.setStyleSheet(PLAY_BUTTON_STYLE)
         self.play_button.setToolTip("Launch Sailwind with the selected ModPack")
         self.play_button.clicked.connect(self._play)
         self.vanilla_button = QPushButton("Launch Vanilla")
@@ -86,24 +110,12 @@ class MainWindow(QMainWindow):
         io_buttons.addWidget(export_btn)
         io_buttons.addWidget(import_btn)
 
-        self.backup_button = QPushButton("Backup BepInEx")
-        self.backup_button.setToolTip("Zip the current BepInEx folder (game install, or this pack if the game has none)")
-        self.backup_button.clicked.connect(self._backup_bepinex)
-        self.restore_button = QPushButton("Restore BepInEx")
-        self.restore_button.setToolTip("Replace the current BepInEx folder from a backup zip")
-        self.restore_button.clicked.connect(self._restore_bepinex)
-
-        backup_row = QHBoxLayout()
-        backup_row.addWidget(self.backup_button)
-        backup_row.addWidget(self.restore_button)
-
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(QLabel("ModPacks"))
         left_layout.addWidget(self.pack_list, 1)
         left_layout.addLayout(pack_buttons)
         left_layout.addLayout(io_buttons)
-        left_layout.addLayout(backup_row)
         left_layout.addWidget(self.play_button)
         left_layout.addWidget(self.vanilla_button)
 
@@ -115,6 +127,8 @@ class MainWindow(QMainWindow):
         self.pack_view.import_requested.connect(self._import_missing_mod)
         self.pack_view.find_repo_requested.connect(self._find_pack_repo)
         self.pack_view.remove_requested.connect(self._remove_mod)
+        self.pack_view.version_requested.connect(self._set_pack_mod_version)
+        self.pack_view.browse_versions_requested.connect(self._browse_pack_mod_versions)
         self.catalog_view.install_requested.connect(self._install_from_catalog)
         self.catalog_view.refresh_clicked.connect(self._refresh_catalog)
         self.catalog_view.add_repo_clicked.connect(self._add_catalog_repo)
@@ -123,6 +137,7 @@ class MainWindow(QMainWindow):
         self.library_view.find_repo_requested.connect(self._find_library_repo)
         self.library_view.details_requested.connect(self._show_mod_details)
         self.library_view.delete_requested.connect(self._delete_artifact)
+        self.library_view.rename_requested.connect(self._rename_library_mod)
         self.library_view.prune_requested.connect(self._prune_library)
         self.library_view.import_clicked.connect(self._import_local_mod)
 
@@ -145,10 +160,15 @@ class MainWindow(QMainWindow):
         scan_action.triggered.connect(self._scan_updates)
         import_game_action = self.menuBar().addAction("Import game plugins")
         import_game_action.triggered.connect(self._import_game_plugins)
-        backup_action = self.menuBar().addAction("Backup BepInEx")
-        backup_action.triggered.connect(self._backup_bepinex)
-        restore_action = self.menuBar().addAction("Restore BepInEx")
-        restore_action.triggered.connect(self._restore_bepinex)
+        backup_menu = self.menuBar().addMenu("Backup")
+        self.backup_action = backup_menu.addAction("Backup BepInEx")
+        self.backup_action.setStatusTip(
+            "Zip the current BepInEx folder (game install, or this pack if the game has none)"
+        )
+        self.backup_action.triggered.connect(self._backup_bepinex)
+        self.restore_action = backup_menu.addAction("Restore BepInEx")
+        self.restore_action.setStatusTip("Replace the current BepInEx folder from a backup zip")
+        self.restore_action.triggered.connect(self._restore_bepinex)
         vanilla_action = self.menuBar().addAction("Launch vanilla")
         vanilla_action.triggered.connect(self._play_vanilla)
         import_mod_action = self.menuBar().addAction("Import mod file")
@@ -187,13 +207,37 @@ class MainWindow(QMainWindow):
         pack_id = self.current_pack_id()
         pack = self.manager.packs.get(pack_id) if pack_id else None
         missing = {mod.guid for mod in self.manager.missing_mods(pack)}
-        self.pack_view.set_pack(pack, self.manager.catalog, missing)
         library = self.manager.library.list_mods()
         library_versions: dict[str, set[str]] = {}
+        library_version_rows: dict[str, list[tuple[str, str]]] = {}
         for item in library:
             library_versions.setdefault(item.guid, set()).add(item.version)
+            library_version_rows.setdefault(item.guid, []).append(
+                (item.version, item.meta.version_raw or item.version)
+            )
+        for rows in library_version_rows.values():
+            rows.sort(key=lambda pair: version_key(pair[0]), reverse=True)
+        display_names = {
+            item.guid: self.manager.mod_display_name(
+                item.guid,
+                plugin_folders=list(item.meta.plugin_folders),
+                repo=item.meta.repo,
+            )
+            for item in library
+        }
+        if pack:
+            for pinned in pack.mods:
+                display_names.setdefault(
+                    pinned.guid,
+                    self.manager.mod_display_name(
+                        pinned.guid,
+                        plugin_folders=list(pinned.plugin_folders),
+                        repo=pinned.repo,
+                    ),
+                )
+        self.pack_view.set_pack(pack, self.manager.catalog, missing, library_version_rows, display_names)
         self.catalog_view.set_data(self.manager.catalog, pack, library_versions)
-        self.library_view.set_entries(library, pack)
+        self.library_view.set_entries(library, pack, display_names)
         game = self.manager.game_dir()
         if game:
             self.statusBar().showMessage(f"Game: {game}")
@@ -512,17 +556,80 @@ class MainWindow(QMainWindow):
         self._reload_views()
 
     def _add_library_mod(self, guid: str, version: str) -> None:
+        self._set_pack_mod_version(guid, version, version)
+
+    def _set_pack_mod_version(self, guid: str, version: str, version_raw: str = "") -> None:
         pack_id = self.current_pack_id()
         if not pack_id:
             QMessageBox.warning(self, "No pack", "Create or select a ModPack first.")
             return
-        try:
-            pinned = self.manager.add_library_mod_to_pack(pack_id, guid, version)
-        except Exception as exc:
-            QMessageBox.warning(self, "Could not add mod", str(exc))
+        pack = self.manager.packs.get(pack_id)
+        pinned = pack.find_mod(guid) if pack else None
+        current = parse_mod_version(pinned.version) if pinned else None
+        chosen = parse_mod_version(version) or version
+        if pinned and current == chosen and self.manager.library.has_mod(guid, pinned.version):
             return
-        self._reload_views()
-        self.statusBar().showMessage(f"Added {pinned.guid} {pinned.version} to the pack")
+        if self.manager.library.has_mod(guid, version):
+            try:
+                pinned = self.manager.set_pack_mod_version(
+                    pack_id, guid, version, version_raw or version
+                )
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not change version", str(exc))
+                self._reload_views()
+                return
+            self._reload_views()
+            self.statusBar().showMessage(f"Pinned {pinned.guid} {pinned.version} on the pack")
+            return
+        self._run(
+            lambda progress: self.manager.set_pack_mod_version(
+                pack_id,
+                guid,
+                version,
+                version_raw or version,
+                progress=progress,
+            ),
+            lambda _r: QTimer.singleShot(0, self._reload_views),
+            f"Fetching {guid} {version_raw or version}…",
+        )
+
+    def _browse_pack_mod_versions(self, guid: str) -> None:
+        pack_id = self.current_pack_id()
+        pack = self.manager.packs.get(pack_id) if pack_id else None
+        pinned = pack.find_mod(guid) if pack else None
+        if pack is None or pinned is None:
+            return
+        entry = find_entry(self.manager.catalog, guid)
+        name = self.manager.mod_display_name(
+            guid,
+            plugin_folders=list(pinned.plugin_folders),
+            repo=pinned.repo or (entry.repo if entry else ""),
+        )
+        library_versions = [
+            (item.version, item.meta.version_raw or item.version)
+            for item in self.manager.library.list_mods()
+            if item.guid == guid
+        ]
+        library_versions.sort(key=lambda pair: version_key(pair[0]), reverse=True)
+        repo = pinned.repo or (entry.repo if entry else "")
+        dialog = SelectVersionDialog(
+            guid=guid,
+            name=name,
+            current_version=pinned.version,
+            library_versions=library_versions,
+            repo=repo,
+            parent=self,
+        )
+        if repo:
+            dialog.start_remote(
+                lambda progress: self.manager.list_remote_mod_versions(repo, progress=progress)
+            )
+        if not dialog.exec():
+            return
+        chosen = dialog.selected()
+        if chosen is None:
+            return
+        self._set_pack_mod_version(guid, chosen[0], chosen[1])
 
     def _find_pack_repo(self, guid: str) -> None:
         pack_id = self.current_pack_id()
@@ -559,6 +666,24 @@ class MainWindow(QMainWindow):
         self.manager.set_mod_repo(guid, page)
         self._reload_views()
         self.statusBar().showMessage(f"Repository set to {page}")
+
+    def _rename_library_mod(self, guid: str) -> None:
+        current = self.manager.mod_display_name(guid)
+        default = self.manager.mod_display_name(guid, alias="")
+        name, ok = QInputDialog.getText(
+            self,
+            "Rename mod",
+            (
+                f"Display name for {guid}.\n"
+                f"Leave empty to use the default name ({default})."
+            ),
+            text=current,
+        )
+        if not ok:
+            return
+        shown = self.manager.set_mod_alias(guid, name)
+        self._reload_views()
+        self.statusBar().showMessage(f"Showing {guid} as {shown}")
 
     def _show_mod_details(self, guid: str, version: str) -> None:
         try:
@@ -686,8 +811,8 @@ class MainWindow(QMainWindow):
         self._on_ok = on_ok
         self.play_button.setEnabled(False)
         self.vanilla_button.setEnabled(False)
-        self.backup_button.setEnabled(False)
-        self.restore_button.setEnabled(False)
+        self.backup_action.setEnabled(False)
+        self.restore_action.setEnabled(False)
         self._set_views_enabled(False)
         self.statusBar().showMessage(busy_message)
 
@@ -727,8 +852,8 @@ class MainWindow(QMainWindow):
             self._bridge = None
         self.play_button.setEnabled(True)
         self.vanilla_button.setEnabled(True)
-        self.backup_button.setEnabled(True)
-        self.restore_button.setEnabled(True)
+        self.backup_action.setEnabled(True)
+        self.restore_action.setEnabled(True)
         self._set_views_enabled(True)
 
     @Slot(str)
@@ -754,3 +879,4 @@ class MainWindow(QMainWindow):
         log.error("UI task failed: %s", text)
         QMessageBox.critical(self, "Error", text)
         self.statusBar().showMessage(text)
+        self._reload_views()

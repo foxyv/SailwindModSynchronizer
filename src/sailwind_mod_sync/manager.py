@@ -31,11 +31,21 @@ from sailwind_mod_sync.game.detect import detect_game_path, resolve_game_dir
 from sailwind_mod_sync.game.launch import launch_modded, launch_vanilla
 from sailwind_mod_sync.game.scan_plugins import discover_local_file, scan_plugins_dir
 from sailwind_mod_sync.http_util import HttpClient, ProgressFn
+from sailwind_mod_sync.library.aliases import load_aliases, save_aliases
 from sailwind_mod_sync.library.download import ensure_bepinex, ensure_mod_artifact
 from sailwind_mod_sync.library.special_mods import artifact_ready, coop_dll_search_path, known_repo_for
 from sailwind_mod_sync.library.store import LibraryStore
 from sailwind_mod_sync.logutil import log_duration, setup_logging
-from sailwind_mod_sync.models import CatalogEntry, ModDetails, ModPack, PinnedMod, RemoteModInfo, parse_mod_version, version_key
+from sailwind_mod_sync.models import (
+    CatalogEntry,
+    ModDetails,
+    ModPack,
+    PinnedMod,
+    RemoteModInfo,
+    display_mod_name,
+    parse_mod_version,
+    version_key,
+)
 from sailwind_mod_sync.packs.instance import (
     ensure_instance_bepinex,
     install_pinned_into_plugins,
@@ -68,6 +78,7 @@ class Manager:
         self.http = http or HttpClient(self.config.token())
         self.library = LibraryStore(self.paths)
         self.packs = PackStore(self.paths)
+        self.aliases = load_aliases(self.paths)
         self.catalog: list[CatalogEntry] = load_cached_catalog(self.paths) or []
         default_pack = self.packs.ensure_default()
         if not self.config.last_pack_id or not self.packs.exists(self.config.last_pack_id):
@@ -228,6 +239,57 @@ class Manager:
         self.catalog = merge_with_custom(load_mvc_entries(self.paths), custom)
         log.info("Removed custom catalog entry %s", guid)
 
+    def mod_display_name(
+        self,
+        guid: str,
+        *,
+        alias: str | None = None,
+        plugin_folders: list[str] | None = None,
+        repo: str = "",
+    ) -> str:
+        catalog = find_entry(self.catalog, guid)
+        folders = plugin_folders
+        repo_url = repo
+        if folders is None or not repo_url:
+            for entry in self.library.list_mods():
+                if entry.guid != guid:
+                    continue
+                if folders is None:
+                    folders = list(entry.meta.plugin_folders)
+                repo_url = repo_url or entry.meta.repo
+                break
+        if not repo_url:
+            for pack in self.packs.list_packs():
+                pinned = pack.find_mod(guid)
+                if pinned is None:
+                    continue
+                if folders is None:
+                    folders = list(pinned.plugin_folders)
+                repo_url = repo_url or pinned.repo
+                break
+        return display_mod_name(
+            guid,
+            alias=self.aliases.get(guid, "") if alias is None else alias,
+            catalog_name=catalog.name if catalog else "",
+            catalog_shared=bool(catalog and len(catalog.guids) > 1),
+            plugin_folders=folders,
+            repo=repo_url or (catalog.repo if catalog else ""),
+        )
+
+    def set_mod_alias(self, guid: str, alias: str) -> str:
+        guid = (guid or "").strip()
+        if not guid:
+            raise ValueError("Mod GUID is empty")
+        text = (alias or "").strip()
+        default = self.mod_display_name(guid, alias="")
+        if not text or text == default:
+            self.aliases.pop(guid, None)
+        else:
+            self.aliases[guid] = text
+        save_aliases(self.paths, self.aliases)
+        log.info("Set display alias for %s to %r", guid, self.aliases.get(guid, ""))
+        return self.mod_display_name(guid)
+
     def local_mod_details(self, guid: str, version: str) -> ModDetails:
         meta = self.library.read_mod_meta(guid, version)
         if meta is None:
@@ -238,7 +300,11 @@ class Manager:
             reverse=True,
         )
         catalog = find_entry(self.catalog, guid)
-        name = (catalog.name if catalog else "") or (meta.repo.rstrip("/").split("/")[-1] if meta.repo else guid)
+        name = self.mod_display_name(
+            guid,
+            plugin_folders=list(meta.plugin_folders),
+            repo=meta.repo or (catalog.repo if catalog else ""),
+        )
         pack_pins: list[tuple[str, str]] = []
         for pack in self.packs.list_packs():
             pinned = pack.find_mod(guid)
@@ -319,6 +385,51 @@ class Manager:
             progress=progress,
         )
 
+    def list_remote_mod_versions(
+        self,
+        repo: str,
+        progress: ProgressFn | None = None,
+    ) -> list[tuple[str, str]]:
+        releases = list_releases(self.http, repo, limit=40, progress=progress)
+        rows: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in releases:
+            raw = (item.tag or item.name or "").strip()
+            version = parse_mod_version(raw)
+            if not version or version in seen:
+                continue
+            seen.add(version)
+            rows.append((version, raw))
+        return rows
+
+    def set_pack_mod_version(
+        self,
+        pack_id: str,
+        guid: str,
+        version: str,
+        version_raw: str | None = None,
+        progress: ProgressFn | None = None,
+    ) -> PinnedMod:
+        pack = self.packs.get(pack_id)
+        pinned = pack.find_mod(guid)
+        repo = (pinned.repo if pinned else "") or None
+        if self.library.has_mod(guid, version):
+            return self.add_library_mod_to_pack(
+                pack_id,
+                guid,
+                version,
+                repo=repo,
+                progress=progress,
+            )
+        return self.install_mod(
+            pack_id,
+            guid,
+            repo=repo,
+            version=version,
+            version_raw=version_raw or version,
+            progress=progress,
+        )
+
     def add_library_mod_to_pack(
         self,
         pack_id: str,
@@ -341,7 +452,7 @@ class Manager:
             guid=guid,
             version=meta.version,
             repo=repo or meta.repo,
-            enabled=True,
+            enabled=previous.enabled if previous else True,
             plugin_folders=list(meta.plugin_folders),
             version_raw=meta.version_raw,
         )
@@ -351,6 +462,8 @@ class Manager:
             self.packs.plugins_dir(pack_id),
         )
         pinned.plugin_folders = folders
+        if not pinned.enabled:
+            remove_plugin_folders(self.packs.plugins_dir(pack_id), pinned.plugin_folders)
         self.packs.upsert_mod(pack_id, pinned)
         return pinned
 

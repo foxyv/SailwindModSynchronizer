@@ -15,7 +15,9 @@ from sailwind_mod_sync.game.backup import (
 )
 from sailwind_mod_sync.http_util import HttpClient
 from sailwind_mod_sync.manager import Manager
+from sailwind_mod_sync.models import CatalogEntry
 from sailwind_mod_sync.paths import AppPaths
+from sailwind_mod_sync.ui.main_window import MainWindow
 
 
 class _NoHttp(HttpClient):
@@ -134,3 +136,41 @@ def test_manager_restore_to_game_bepinex(paths: AppPaths, tmp_path: Path) -> Non
     result = manager.restore_bepinex(archive)
     assert result.dest == game / "BepInEx"
     assert (game / "BepInEx" / "plugins" / "Dizzy.Gamma" / "Dizzy.Gamma.dll").read_bytes() == b"MZ"
+
+
+def test_backup_commands_are_under_backup_menu(paths: AppPaths) -> None:
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    app = QApplication.instance() or QApplication([])
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.catalog = [
+        CatalogEntry(
+            repo="https://github.com/example/mod",
+            guids=["com.example.mod"],
+            primary_guid="com.example.mod",
+            name="mod",
+            latest_raw="v1.0.0",
+            latest_version="1.0.0",
+            available=True,
+        )
+    ]
+    window = MainWindow(manager)
+    try:
+        labels = [button.text() for button in window.findChildren(QPushButton)]
+        assert "Backup BepInEx" not in labels
+        assert "Restore BepInEx" not in labels
+        backup_menu = next(
+            action.menu()
+            for action in window.menuBar().actions()
+            if action.menu() and action.menu().title().replace("&", "") == "Backup"
+        )
+        items = [action.text().replace("&", "") for action in backup_menu.actions()]
+        assert items == ["Backup BepInEx", "Restore BepInEx"]
+        top_level = [action.text().replace("&", "") for action in window.menuBar().actions()]
+        assert "Backup BepInEx" not in top_level
+        assert "Restore BepInEx" not in top_level
+    finally:
+        window.close()
+        window.deleteLater()
+        manager.close()
+    app.processEvents()

@@ -25,6 +25,7 @@ class AppPaths:
         self.etag_dir = self.catalog_dir / "etags"
         self.library_mods = self.root / "library" / "mods"
         self.library_bepinex = self.root / "library" / "bepinex"
+        self.aliases_file = self.root / "library" / "aliases.json"
         self.packs_dir = self.root / "packs"
         self.backups_dir = self.root / "backups"
         self.log_file = self.root / "manager.log"

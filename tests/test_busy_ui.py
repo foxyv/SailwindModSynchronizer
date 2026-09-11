@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QPushButton, QTableWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QLabel, QPushButton, QTableWidget
 
-from sailwind_mod_sync.models import CatalogEntry, LibraryEntry, ArtifactMeta, ModDetails, PinnedMod
+from sailwind_mod_sync.models import CatalogEntry, LibraryEntry, ArtifactMeta, ModDetails, ModPack, PinnedMod
 from sailwind_mod_sync.ui.catalog_view import CatalogView, catalog_library_button
 from sailwind_mod_sync.ui.library_view import LibraryView
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
 from sailwind_mod_sync.ui.links import repo_button
 from sailwind_mod_sync.ui.missing_mods_dialog import MissingModsWarningDialog
+from sailwind_mod_sync.ui.pack_view import PackView
 from sailwind_mod_sync.ui.progress_dialog import BusyDialog
 from sailwind_mod_sync.ui.tables import enable_column_resize
+from sailwind_mod_sync.ui.version_dialog import SelectVersionDialog
 
 
 def test_busy_dialog_shows_status_text() -> None:
@@ -146,6 +148,9 @@ def test_library_double_click_requests_details() -> None:
         view.set_entries([entry])
         view._on_double_click(0, 0)
         assert caught == [("com.example.mod", "1.2.0")]
+        assert view.table.item(0, 0).text() == "mod"
+        assert view.table.horizontalHeaderItem(0).text() == "Name"
+        assert "Rename" in [button.text() for button in view.findChildren(QPushButton)]
     finally:
         view.deleteLater()
     app.processEvents()
@@ -181,3 +186,115 @@ def test_mod_details_dialog_shows_installed_versions() -> None:
         dialog.close()
         dialog.deleteLater()
     app.processEvents()
+
+
+def test_library_view_uses_supplied_name_and_emits_rename() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = LibraryView()
+    renamed: list[str] = []
+    view.rename_requested.connect(renamed.append)
+    entry = LibraryEntry(
+        guid="com.dizzy.sailwind.gamma",
+        version="0.3.3",
+        path=Path("."),
+        zip_path=Path("."),
+        extracted_dir=Path("."),
+        meta=ArtifactMeta(
+            guid="com.dizzy.sailwind.gamma",
+            version="0.3.3",
+            version_raw="v0.3.3",
+            repo="https://github.com/foxyv/dizzy_sailwind_mods",
+            source_url="https://example/gamma.zip",
+            sha256="abc",
+            filename="gamma.zip",
+            plugin_folders=["Dizzy.Gamma"],
+        ),
+        size_bytes=12,
+    )
+    try:
+        view.set_entries([entry], names={"com.dizzy.sailwind.gamma": "Dizzy Gamma"})
+        assert view.table.item(0, 0).text() == "Dizzy Gamma"
+        assert view.table.item(0, 1).text() == "com.dizzy.sailwind.gamma"
+        rename = next(button for button in view.findChildren(QPushButton) if button.text() == "Rename")
+        rename.click()
+        assert renamed == ["com.dizzy.sailwind.gamma"]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_pack_view_version_combo_emits_choice() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = PackView()
+    chosen: list[tuple[str, str, str]] = []
+    browsed: list[str] = []
+    view.version_requested.connect(lambda guid, version, raw: chosen.append((guid, version, raw)))
+    view.browse_versions_requested.connect(browsed.append)
+    pack = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[
+            PinnedMod(
+                guid="com.example.mod",
+                version="1.0.0",
+                repo="https://github.com/example/mod",
+                version_raw="v1.0.0",
+            )
+        ],
+    )
+    try:
+        view.set_pack(
+            pack,
+            [_catalog_entry()],
+            set(),
+            {"com.example.mod": [("1.1.0", "v1.1.0"), ("1.0.0", "v1.0.0")]},
+        )
+        combo = view.table.cellWidget(0, 3)
+        assert isinstance(combo, QComboBox)
+        labels = [combo.itemText(index) for index in range(combo.count())]
+        assert combo.currentText() == "v1.0.0"
+        assert "v1.1.0" in labels
+        assert "More versions…" in labels
+        combo.setCurrentIndex(labels.index("More versions…"))
+        assert browsed == ["com.example.mod"]
+        assert combo.currentText() == "v1.0.0"
+        combo.setCurrentIndex(labels.index("v1.1.0"))
+        assert chosen == [("com.example.mod", "1.1.0", "v1.1.0")]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_select_version_dialog_lists_library_and_remote() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = SelectVersionDialog(
+        guid="com.example.mod",
+        name="Example",
+        current_version="1.0.0",
+        library_versions=[("1.0.0", "v1.0.0"), ("0.9.0", "v0.9.0")],
+    )
+    try:
+        labels = [dialog.list.item(index).text() for index in range(dialog.list.count())]
+        assert any("v1.0.0" in label and "current" in label for label in labels)
+        assert any("v0.9.0" in label and "in library" in label for label in labels)
+        dialog._on_remote([("1.2.0", "v1.2.0")])
+        labels = [dialog.list.item(index).text() for index in range(dialog.list.count())]
+        assert any("v1.2.0" in label and "download" in label for label in labels)
+        dialog.list.setCurrentRow(0)
+        dialog.accept()
+        selected = dialog.selected()
+        assert selected is not None
+        assert selected[0] == "1.2.0"
+        assert selected[1] == "v1.2.0"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_play_button_style_is_green() -> None:
+    from sailwind_mod_sync.ui.main_window import PLAY_BUTTON_STYLE
+
+    assert "#2e7d32" in PLAY_BUTTON_STYLE
+    assert "color: white" in PLAY_BUTTON_STYLE
+

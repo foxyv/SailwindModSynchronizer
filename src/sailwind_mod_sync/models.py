@@ -33,6 +33,33 @@ def is_newer(latest_raw: str | None, current_raw: str | None) -> bool:
     return version_key(latest_raw) > version_key(current_raw)
 
 
+def display_mod_name(
+    guid: str,
+    *,
+    alias: str = "",
+    catalog_name: str = "",
+    catalog_shared: bool = False,
+    plugin_folders: list[str] | None = None,
+    repo: str = "",
+) -> str:
+    text = (alias or "").strip()
+    if text:
+        return text
+    folders = [folder.strip() for folder in (plugin_folders or []) if folder and folder.strip()]
+    catalog = (catalog_name or "").strip()
+    if catalog and not catalog_shared:
+        return catalog
+    if folders:
+        return folders[0]
+    if catalog:
+        return catalog
+    repo_name = (repo or "").rstrip("/").split("/")[-1].strip()
+    if repo_name:
+        return repo_name
+    parts = [part for part in guid.split(".") if part]
+    return parts[-1] if parts else guid or "Unknown"
+
+
 @dataclass
 class CatalogEntry:
     repo: str
