@@ -28,6 +28,7 @@ class AppPaths:
         self.aliases_file = self.root / "library" / "aliases.json"
         self.packs_dir = self.root / "packs"
         self.backups_dir = self.root / "backups"
+        self.updates_dir = self.root / "updates"
         self.log_file = self.root / "manager.log"
 
     def ensure(self) -> None:
@@ -39,6 +40,7 @@ class AppPaths:
             self.library_bepinex,
             self.packs_dir,
             self.backups_dir,
+            self.updates_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

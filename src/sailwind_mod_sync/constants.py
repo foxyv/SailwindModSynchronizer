@@ -4,7 +4,9 @@ DEFAULT_GAME_PATH = r"D:\SteamLibrary\steamapps\common\Sailwind"
 
 APP_NAME = "Sailwind Mod Synchronizer"
 APP_VERSION = "0.1.0"
+APP_REPO = "https://github.com/foxyv/SailwindModSynchronizer"
 USER_AGENT = f"SailwindModSynchronizer/{APP_VERSION}"
+UPDATE_CHECK_HOURS = 24
 
 DEFAULT_BEPINEX_VERSION = "5.4.2305"
 BEPINEX_NAMESPACE = "BepInEx"

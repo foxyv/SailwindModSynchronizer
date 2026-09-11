@@ -251,6 +251,7 @@ def _parse_github_payload(data: dict) -> RemoteRelease:
         name=str(data.get("name") or data.get("tag_name") or ""),
         assets=assets,
         html_url=str(data.get("html_url") or ""),
+        body=str(data.get("body") or ""),
     )
 
 

@@ -26,4 +26,22 @@ def test_old_config_without_flag_warns_by_default(paths: AppPaths) -> None:
     )
     loaded = load_config(paths)
     assert loaded.warn_missing_mods is True
+    assert loaded.check_for_updates is True
     assert loaded.game_path == "D:/Sailwind"
+    assert loaded.last_update_check == ""
+    assert loaded.skipped_update_version == ""
+
+
+def test_save_and_load_update_settings(paths: AppPaths) -> None:
+    save_config(
+        paths,
+        AppConfig(
+            check_for_updates=False,
+            last_update_check="2026-09-11T18:00:00+00:00",
+            skipped_update_version="0.2.0",
+        ),
+    )
+    loaded = load_config(paths)
+    assert loaded.check_for_updates is False
+    assert loaded.last_update_check == "2026-09-11T18:00:00+00:00"
+    assert loaded.skipped_update_version == "0.2.0"

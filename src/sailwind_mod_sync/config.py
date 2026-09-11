@@ -16,6 +16,9 @@ class AppConfig:
     github_token: str = ""
     last_pack_id: str = ""
     warn_missing_mods: bool = True
+    check_for_updates: bool = True
+    last_update_check: str = ""
+    skipped_update_version: str = ""
 
     def token(self) -> str:
         return self.github_token.strip() or os.environ.get("GITHUB_TOKEN", "").strip()
@@ -36,6 +39,9 @@ def load_config(paths: AppPaths) -> AppConfig:
         github_token=str(data.get("github_token") or ""),
         last_pack_id=str(data.get("last_pack_id") or ""),
         warn_missing_mods=_as_bool(data.get("warn_missing_mods"), True),
+        check_for_updates=_as_bool(data.get("check_for_updates"), True),
+        last_update_check=str(data.get("last_update_check") or ""),
+        skipped_update_version=str(data.get("skipped_update_version") or ""),
     )
 
 

@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from sailwind_mod_sync.catalog.github import fetch_release
+from sailwind_mod_sync.constants import APP_REPO, APP_VERSION, UPDATE_CHECK_HOURS
+from sailwind_mod_sync.http_util import HttpClient, HttpError, ProgressFn
+from sailwind_mod_sync.library.extract import ExtractError, safe_extract_zip
+from sailwind_mod_sync.models import ReleaseAsset, is_newer, parse_mod_version
+from sailwind_mod_sync.paths import AppPaths
+
+log = logging.getLogger(__name__)
+
+EXE_NAME = "SailwindModSynchronizer.exe"
+_TRUSTED_HOSTS = {
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+}
+
+
+@dataclass
+class AppUpdate:
+    version: str
+    version_raw: str
+    tag: str
+    html_url: str
+    notes: str = ""
+    asset_name: str = ""
+    download_url: str = ""
+    installable: bool = False
+
+
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def install_dir() -> Path | None:
+    if not is_frozen():
+        return None
+    return Path(sys.executable).resolve().parent
+
+
+def update_check_due(last_iso: str, hours: float = UPDATE_CHECK_HOURS) -> bool:
+    if not (last_iso or "").strip():
+        return True
+    try:
+        last = datetime.fromisoformat(last_iso)
+    except ValueError:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - last >= timedelta(hours=hours)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def pick_update_asset(assets: list[ReleaseAsset]) -> ReleaseAsset | None:
+    zips = [asset for asset in assets if asset.name.lower().endswith(".zip") and asset.download_url]
+    if not zips:
+        return None
+
+    def score(asset: ReleaseAsset) -> int:
+        name = asset.name.lower()
+        points = 0
+        if "windows" in name:
+            points += 10
+        if "sailwindmodsynchronizer" in name or "sailwind-mod-sync" in name:
+            points += 10
+        if "source" in name:
+            points -= 20
+        if name.endswith("-sources.zip") or name.endswith("_source.zip"):
+            points -= 20
+        return points
+
+    best = max(zips, key=score)
+    return best if score(best) >= 0 else None
+
+
+def find_app_update(
+    http: HttpClient,
+    *,
+    current_version: str = APP_VERSION,
+    skipped_version: str = "",
+    ignore_skipped: bool = False,
+    paths: AppPaths | None = None,
+    progress: ProgressFn | None = None,
+) -> AppUpdate | None:
+    try:
+        release = fetch_release(http, APP_REPO, tag=None, paths=paths, progress=progress)
+    except HttpError as exc:
+        text = str(exc).lower()
+        if exc.status_code == 404 or "no github release" in text or "no published github" in text:
+            log.info("No app releases yet: %s", exc)
+            return None
+        raise
+    version = parse_mod_version(release.tag) or parse_mod_version(release.name)
+    if not version:
+        log.info("Could not parse app release version from %s", release.tag)
+        return None
+    if not is_newer(version, current_version):
+        return None
+    if not ignore_skipped and skipped_version and parse_mod_version(skipped_version) == version:
+        log.info("Skipping app update %s by user request", version)
+        return None
+    asset = pick_update_asset(release.assets)
+    download_url = ""
+    asset_name = ""
+    if asset and _trusted_download_url(asset.download_url):
+        download_url = asset.download_url
+        asset_name = asset.name
+    elif asset:
+        log.warning("Rejected untrusted update URL %s", asset.download_url)
+    return AppUpdate(
+        version=version,
+        version_raw=release.tag or version,
+        tag=release.tag,
+        html_url=release.html_url or APP_REPO,
+        notes=(release.body or "").strip(),
+        asset_name=asset_name,
+        download_url=download_url,
+        installable=bool(download_url) and is_frozen(),
+    )
+
+
+def download_and_stage_update(
+    http: HttpClient,
+    update: AppUpdate,
+    paths: AppPaths,
+    progress: ProgressFn | None = None,
+) -> Path:
+    if not update.download_url:
+        raise RuntimeError("This release has no Windows zip to install")
+    if not _trusted_download_url(update.download_url):
+        raise RuntimeError("Update download is not from GitHub")
+    paths.updates_dir.mkdir(parents=True, exist_ok=True)
+    archive = paths.updates_dir / (update.asset_name or f"SailwindModSynchronizer-{update.version}.zip")
+    if progress:
+        progress(f"Downloading {archive.name}…")
+    http.download(update.download_url, archive, progress=progress)
+    staging = paths.updates_dir / "payload"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+    if progress:
+        progress("Extracting update…")
+    extracted = staging / "extracted"
+    extracted.mkdir()
+    try:
+        safe_extract_zip(archive, extracted)
+    except ExtractError as exc:
+        raise RuntimeError(str(exc)) from exc
+    payload = _payload_root(extracted)
+    log.info("Staged app update %s at %s", update.version, payload)
+    return payload
+
+
+def launch_apply_and_exit(payload: Path, *, pid: int | None = None) -> Path:
+    dest = install_dir()
+    if dest is None:
+        raise RuntimeError("Auto-update only works for the installed SailwindModSynchronizer.exe")
+    exe = dest / EXE_NAME
+    if not exe.is_file() and Path(sys.executable).name.lower().endswith(".exe"):
+        exe = Path(sys.executable).resolve()
+        dest = exe.parent
+    src = payload.resolve()
+    dest = dest.resolve()
+    if src == dest or dest in src.parents:
+        raise RuntimeError("Update payload overlaps the install folder")
+    script = _write_apply_script(src, dest, exe, pid if pid is not None else os.getpid())
+    flags = 0
+    if os.name == "nt":
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+        )
+        creationflags = flags | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(script)],
+            close_fds=True,
+            creationflags=creationflags,
+            cwd=str(script.parent),
+        )
+    else:
+        subprocess.Popen(["sh", str(script)], start_new_session=True)
+    log.info("Launched update script %s", script)
+    return script
+
+
+def zip_release_dir(source: Path, dest: Path) -> Path:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    with ZipFile(dest, "w", compression=ZIP_DEFLATED) as archive:
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(source).as_posix())
+    return dest
+
+
+def _payload_root(extracted: Path) -> Path:
+    direct = extracted / EXE_NAME
+    if direct.is_file():
+        return extracted
+    matches = [path for path in extracted.rglob(EXE_NAME) if path.is_file()]
+    if not matches:
+        raise RuntimeError(f"Update zip did not contain {EXE_NAME}")
+    matches.sort(key=lambda path: len(path.parts))
+    return matches[0].parent
+
+
+def _trusted_download_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host in _TRUSTED_HOSTS:
+        return True
+    return host.endswith(".githubusercontent.com")
+
+
+def _write_apply_script(src: Path, dest: Path, exe: Path, pid: int) -> Path:
+    log_path = src.parent.parent / "apply.log"
+    script = src.parent.parent / "apply_update.bat"
+    src_s = _bat_quote(str(src))
+    dest_s = _bat_quote(str(dest))
+    exe_s = _bat_quote(str(exe))
+    log_s = _bat_quote(str(log_path))
+    script.write_text(
+        "\r\n".join(
+            [
+                "@echo off",
+                "setlocal",
+                f"set PID={int(pid)}",
+                f"echo Waiting for process %PID% > {log_s}",
+                ":wait",
+                f'tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul',
+                "if not errorlevel 1 (",
+                "  timeout /t 1 /nobreak >nul",
+                "  goto wait",
+                ")",
+                f"echo Copying files >> {log_s}",
+                f"robocopy {src_s} {dest_s} /E /IS /IT /R:3 /W:1 /NFL /NDL /NJH /NJS",
+                "set RC=%ERRORLEVEL%",
+                "if %RC% GEQ 8 (",
+                f"  echo robocopy failed %RC% >> {log_s}",
+                "  exit /b %RC%",
+                ")",
+                f"echo Starting app >> {log_s}",
+                f"start \"\" {exe_s}",
+                "endlocal",
+            ]
+        )
+        + "\r\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def _bat_quote(value: str) -> str:
+    return '"' + value.replace('"', "") + '"'

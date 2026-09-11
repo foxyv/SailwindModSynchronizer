@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from sailwind_mod_sync.constants import APP_NAME
+from sailwind_mod_sync.constants import APP_NAME, APP_VERSION
 from sailwind_mod_sync.manager import Manager
 from sailwind_mod_sync.resources import icon_path
 
@@ -27,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication(argv or sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setStyle("Fusion")
     icon_file = icon_path()
     if icon_file is not None:

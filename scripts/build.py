@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = REPO_ROOT / "assets"
@@ -91,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copy2(ICO_ICON, DIST_DIR / "icon.ico")
     print(f"Built {exe}")
 
+    version = _app_version()
+    archive = zip_dist(DIST_DIR, REPO_ROOT / "dist" / f"{EXE_NAME}-{version}-windows.zip")
+    print(f"Release zip {archive}")
+    print("Upload that zip to a GitHub release so the app can auto-update.")
+
     if not args.skip_shortcut:
         shortcut = create_desktop_shortcut(exe, DIST_DIR / "icon.ico")
         print(f"Desktop shortcut: {shortcut}")
@@ -115,6 +121,27 @@ def write_ico(png_path: Path, ico_path: Path) -> Path:
     ico_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(ico_path, format="ICO", sizes=sizes)
     return ico_path
+
+
+def _app_version() -> str:
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("version"):
+            _, _, value = stripped.partition("=")
+            return value.strip().strip('"').strip("'")
+    return "0.0.0"
+
+
+def zip_dist(source: Path, dest: Path) -> Path:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    with ZipFile(dest, "w", compression=ZIP_DEFLATED) as archive:
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(source).as_posix())
+    return dest
 
 
 def _run_pyinstaller(*, windowed: bool) -> None:

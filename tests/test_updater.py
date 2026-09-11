@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from sailwind_mod_sync.http_util import HttpError
+from sailwind_mod_sync.models import ReleaseAsset, RemoteRelease
+from sailwind_mod_sync.paths import AppPaths
+from sailwind_mod_sync.updater import (
+    EXE_NAME,
+    AppUpdate,
+    download_and_stage_update,
+    find_app_update,
+    launch_apply_and_exit,
+    pick_update_asset,
+    update_check_due,
+    utc_now_iso,
+    zip_release_dir,
+)
+
+
+def test_pick_update_asset_prefers_windows_zip() -> None:
+    assets = [
+        ReleaseAsset("source.zip", "https://github.com/foxyv/SailwindModSynchronizer/archive/refs/tags/v0.2.0.zip"),
+        ReleaseAsset(
+            "SailwindModSynchronizer-0.2.0-windows.zip",
+            "https://github.com/foxyv/SailwindModSynchronizer/releases/download/v0.2.0/SailwindModSynchronizer-0.2.0-windows.zip",
+        ),
+    ]
+    chosen = pick_update_asset(assets)
+    assert chosen is not None
+    assert chosen.name.endswith("windows.zip")
+
+
+def test_pick_update_asset_ignores_source_only() -> None:
+    assets = [ReleaseAsset("project-sources.zip", "https://github.com/example/src.zip")]
+    assert pick_update_asset(assets) is None
+
+
+def test_update_check_due_empty_and_old() -> None:
+    assert update_check_due("")
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(hours=1)).isoformat()
+    old = (now - timedelta(hours=25)).isoformat()
+    assert not update_check_due(recent)
+    assert update_check_due(old)
+
+
+def test_find_app_update_returns_newer(monkeypatch) -> None:
+    release = RemoteRelease(
+        tag="v0.2.0",
+        name="v0.2.0",
+        html_url="https://github.com/foxyv/SailwindModSynchronizer/releases/tag/v0.2.0",
+        body="Bug fixes",
+        assets=[
+            ReleaseAsset(
+                "SailwindModSynchronizer-0.2.0-windows.zip",
+                "https://github.com/foxyv/SailwindModSynchronizer/releases/download/v0.2.0/app.zip",
+            )
+        ],
+    )
+    monkeypatch.setattr("sailwind_mod_sync.updater.fetch_release", lambda *args, **kwargs: release)
+    monkeypatch.setattr("sailwind_mod_sync.updater.is_frozen", lambda: True)
+    update = find_app_update(MagicMock(), current_version="0.1.0")
+    assert update is not None
+    assert update.version == "0.2.0"
+    assert update.installable
+    assert "Bug fixes" in update.notes
+
+
+def test_find_app_update_skips_same_and_skipped(monkeypatch) -> None:
+    release = RemoteRelease(
+        tag="v0.2.0",
+        name="v0.2.0",
+        assets=[
+            ReleaseAsset(
+                "SailwindModSynchronizer-0.2.0-windows.zip",
+                "https://github.com/foxyv/SailwindModSynchronizer/releases/download/v0.2.0/app.zip",
+            )
+        ],
+    )
+    monkeypatch.setattr("sailwind_mod_sync.updater.fetch_release", lambda *args, **kwargs: release)
+    assert find_app_update(MagicMock(), current_version="0.2.0") is None
+    skipped = find_app_update(MagicMock(), current_version="0.1.0", skipped_version="0.2.0")
+    assert skipped is None
+    forced = find_app_update(
+        MagicMock(), current_version="0.1.0", skipped_version="0.2.0", ignore_skipped=True
+    )
+    assert forced is not None
+
+
+def test_find_app_update_handles_no_releases(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sailwind_mod_sync.updater.fetch_release",
+        lambda *args, **kwargs: (_ for _ in ()).throw(HttpError("No GitHub releases for x", status_code=404)),
+    )
+    assert find_app_update(MagicMock()) is None
+
+
+def test_find_app_update_rejects_untrusted_url(monkeypatch) -> None:
+    release = RemoteRelease(
+        tag="v0.2.0",
+        name="v0.2.0",
+        html_url="https://github.com/foxyv/SailwindModSynchronizer/releases/tag/v0.2.0",
+        assets=[
+            ReleaseAsset(
+                "SailwindModSynchronizer-0.2.0-windows.zip",
+                "https://evil.example/SailwindModSynchronizer-0.2.0-windows.zip",
+            )
+        ],
+    )
+    monkeypatch.setattr("sailwind_mod_sync.updater.fetch_release", lambda *args, **kwargs: release)
+    monkeypatch.setattr("sailwind_mod_sync.updater.is_frozen", lambda: True)
+    update = find_app_update(MagicMock(), current_version="0.1.0")
+    assert update is not None
+    assert update.download_url == ""
+    assert not update.installable
+
+
+def test_download_and_stage_update(paths: AppPaths, tmp_path: Path) -> None:
+    payload_src = tmp_path / "payload"
+    payload_src.mkdir()
+    (payload_src / EXE_NAME).write_bytes(b"MZ")
+    inner = payload_src / "_internal"
+    inner.mkdir()
+    (inner / "readme.txt").write_text("ok", encoding="utf-8")
+    archive = tmp_path / "app.zip"
+    zip_release_dir(payload_src, archive)
+    http = MagicMock()
+
+    def download(url, dest, progress=None):
+        dest.write_bytes(archive.read_bytes())
+
+    http.download.side_effect = download
+    update = AppUpdate(
+        version="0.2.0",
+        version_raw="v0.2.0",
+        tag="v0.2.0",
+        html_url="https://github.com/foxyv/SailwindModSynchronizer/releases/tag/v0.2.0",
+        asset_name="SailwindModSynchronizer-0.2.0-windows.zip",
+        download_url="https://github.com/foxyv/SailwindModSynchronizer/releases/download/v0.2.0/app.zip",
+        installable=True,
+    )
+    staged = download_and_stage_update(http, update, paths)
+    assert (staged / EXE_NAME).is_file()
+    assert (staged / "_internal" / "readme.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_download_nested_payload_root(paths: AppPaths, tmp_path: Path) -> None:
+    nested = tmp_path / "outer" / "SailwindModSynchronizer"
+    nested.mkdir(parents=True)
+    (nested / EXE_NAME).write_bytes(b"MZ")
+    (nested / "readme.txt").write_text("nested", encoding="utf-8")
+    archive = tmp_path / "app.zip"
+    zip_release_dir(tmp_path / "outer", archive)
+    http = MagicMock()
+    http.download.side_effect = lambda url, dest, progress=None: dest.write_bytes(archive.read_bytes())
+    update = AppUpdate(
+        version="0.2.0",
+        version_raw="v0.2.0",
+        tag="v0.2.0",
+        html_url="https://github.com/foxyv/SailwindModSynchronizer/releases/tag/v0.2.0",
+        asset_name="SailwindModSynchronizer-0.2.0-windows.zip",
+        download_url="https://github.com/foxyv/SailwindModSynchronizer/releases/download/v0.2.0/app.zip",
+        installable=True,
+    )
+    staged = download_and_stage_update(http, update, paths)
+    assert staged.name == "SailwindModSynchronizer"
+    assert (staged / EXE_NAME).is_file()
+    assert (staged / "readme.txt").read_text(encoding="utf-8") == "nested"
+
+
+def test_launch_apply_writes_script(tmp_path: Path, monkeypatch) -> None:
+    payload = tmp_path / "payload" / "extracted"
+    payload.mkdir(parents=True)
+    (payload / EXE_NAME).write_bytes(b"MZ")
+    dest = tmp_path / "install"
+    dest.mkdir()
+    (dest / EXE_NAME).write_bytes(b"old")
+    monkeypatch.setattr("sailwind_mod_sync.updater.is_frozen", lambda: True)
+    monkeypatch.setattr("sailwind_mod_sync.updater.install_dir", lambda: dest)
+    monkeypatch.setattr("sailwind_mod_sync.updater.subprocess.Popen", MagicMock())
+    script = launch_apply_and_exit(payload, pid=4242)
+    text = script.read_text(encoding="utf-8")
+    assert "set PID=4242" in text
+    assert "robocopy" in text
+    assert EXE_NAME in text
+    assert str(dest) in text
+
+
+def test_launch_apply_requires_frozen(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("sailwind_mod_sync.updater.is_frozen", lambda: False)
+    with pytest.raises(RuntimeError, match="installed"):
+        launch_apply_and_exit(tmp_path)
+
+
+def test_utc_now_iso_is_parseable() -> None:
+    stamp = utc_now_iso()
+    datetime.fromisoformat(stamp)

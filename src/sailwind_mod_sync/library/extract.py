@@ -52,6 +52,11 @@ def extract_bepinex_pack(archive: Path, dest: Path) -> Path:
     return dest
 
 
+def safe_extract_zip(archive: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    _safe_extract(archive, dest)
+
+
 def _safe_extract(archive: Path, dest: Path) -> None:
     dest = dest.resolve()
     with zipfile.ZipFile(archive) as zf:

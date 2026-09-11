@@ -4,7 +4,12 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QLabel, QPushButton, QTableWidget
 
+from sailwind_mod_sync.config import AppConfig
 from sailwind_mod_sync.models import CatalogEntry, LibraryEntry, ArtifactMeta, ModDetails, ModPack, PinnedMod
+from sailwind_mod_sync.paths import AppPaths
+from sailwind_mod_sync.updater import AppUpdate
+from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
+from sailwind_mod_sync.ui.update_dialog import OPEN, SKIP, UPDATE, UpdateDialog
 from sailwind_mod_sync.ui.catalog_view import CatalogView, catalog_library_button
 from sailwind_mod_sync.ui.library_view import LibraryView
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
@@ -297,4 +302,124 @@ def test_play_button_style_is_green() -> None:
 
     assert "#2e7d32" in PLAY_BUTTON_STYLE
     assert "color: white" in PLAY_BUTTON_STYLE
+
+
+def _sample_update(*, installable: bool) -> AppUpdate:
+    return AppUpdate(
+        version="0.2.0",
+        version_raw="v0.2.0",
+        tag="v0.2.0",
+        html_url="https://github.com/foxyv/SailwindModSynchronizer/releases/tag/v0.2.0",
+        notes="Bug fixes",
+        asset_name="SailwindModSynchronizer-0.2.0-windows.zip",
+        download_url="https://github.com/foxyv/SailwindModSynchronizer/releases/download/v0.2.0/app.zip",
+        installable=installable,
+    )
+
+
+def test_update_dialog_installable_buttons() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = UpdateDialog(_sample_update(installable=True))
+    try:
+        labels = [button.text() for button in dialog.findChildren(QPushButton)]
+        assert "Update" in labels
+        assert "Skip this version" in labels
+        assert "Later" in labels
+        assert "Open GitHub" not in labels
+        update_btn = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Update")
+        update_btn.click()
+        assert dialog.choice() == UPDATE
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_update_dialog_opens_github_when_not_installable() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = UpdateDialog(_sample_update(installable=False))
+    try:
+        labels = [button.text() for button in dialog.findChildren(QPushButton)]
+        assert "Open GitHub" in labels
+        assert "Update" not in labels
+        open_btn = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Open GitHub")
+        open_btn.click()
+        assert dialog.choice() == OPEN
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_update_dialog_skip_choice() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = UpdateDialog(_sample_update(installable=True))
+    try:
+        skip = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Skip this version")
+        skip.click()
+        assert dialog.choice() == SKIP
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_has_update_checkbox(paths: AppPaths) -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(AppConfig(check_for_updates=False), paths)
+    try:
+        assert not dialog.check_updates.isChecked()
+        dialog.check_updates.setChecked(True)
+        config = AppConfig(check_for_updates=False)
+        dialog.apply_to(config)
+        assert config.check_for_updates is True
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
+    from sailwind_mod_sync.http_util import HttpClient
+    from sailwind_mod_sync.manager import Manager
+    from sailwind_mod_sync.ui.main_window import MainWindow
+
+    class _NoHttp(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def close(self) -> None:
+            return None
+
+    app = QApplication.instance() or QApplication([])
+    manager = Manager(paths=paths, config=AppConfig(check_for_updates=False), http=_NoHttp())
+    manager.catalog = [
+        CatalogEntry(
+            repo="https://github.com/example/mod",
+            guids=["com.example.mod"],
+            primary_guid="com.example.mod",
+            name="mod",
+            latest_raw="v1.0.0",
+            latest_version="1.0.0",
+            available=True,
+        )
+    ]
+    window = MainWindow(manager)
+    try:
+        help_menu = next(
+            action.menu()
+            for action in window.menuBar().actions()
+            if action.menu() and action.menu().title().replace("&", "") == "Help"
+        )
+        items = [action.text().replace("&", "") for action in help_menu.actions()]
+        assert "Check for updates…" in items
+        assert "About" in items
+        assert window.windowTitle().startswith("Sailwind Mod Synchronizer")
+    finally:
+        window.close()
+        window.deleteLater()
+        manager.close()
+    app.processEvents()
 

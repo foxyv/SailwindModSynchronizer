@@ -244,3 +244,4 @@ class RemoteRelease:
     name: str
     assets: list[ReleaseAsset]
     html_url: str = ""
+    body: str = ""

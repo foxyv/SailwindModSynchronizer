@@ -69,6 +69,9 @@ class SettingsDialog(QDialog):
         self.warn_missing = QCheckBox("Warn when starting a pack with missing mods")
         self.warn_missing.setChecked(config.warn_missing_mods)
         form.addRow("Missing mods", self.warn_missing)
+        self.check_updates = QCheckBox("Check GitHub for Sailwind Mod Synchronizer updates")
+        self.check_updates.setChecked(config.check_for_updates)
+        form.addRow("App updates", self.check_updates)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -82,7 +85,7 @@ class SettingsDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
         layout.addWidget(buttons)
-        self.resize(640, 280)
+        self.resize(640, 320)
 
     def _toggle_token(self, checked: bool) -> None:
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
@@ -98,3 +101,4 @@ class SettingsDialog(QDialog):
         config.game_path = self.game_path.text().strip()
         config.github_token = self.token.text().strip()
         config.warn_missing_mods = self.warn_missing.isChecked()
+        config.check_for_updates = self.check_updates.isChecked()

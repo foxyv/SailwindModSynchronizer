@@ -5,7 +5,8 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtCore import Qt, QTimer, QUrl, Slot
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailwind_mod_sync.catalog.mvc import find_entry
-from sailwind_mod_sync.constants import APP_NAME
+from sailwind_mod_sync.constants import APP_NAME, APP_REPO, APP_VERSION
 from sailwind_mod_sync.game.backup import BackupError, inspect_bepinex_zip
 from sailwind_mod_sync.manager import Manager
 from sailwind_mod_sync.models import parse_mod_version, version_key
@@ -36,8 +37,17 @@ from sailwind_mod_sync.ui.pack_view import PackView
 from sailwind_mod_sync.ui.progress_dialog import BusyDialog
 from sailwind_mod_sync.ui.repo_dialog import RepoUrlDialog
 from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
+from sailwind_mod_sync.ui.update_dialog import OPEN, SKIP, UPDATE, UpdateDialog
 from sailwind_mod_sync.ui.version_dialog import SelectVersionDialog
 from sailwind_mod_sync.ui.workers import TaskBridge, run_background
+from sailwind_mod_sync.updater import (
+    AppUpdate,
+    download_and_stage_update,
+    find_app_update,
+    launch_apply_and_exit,
+    update_check_due,
+    utc_now_iso,
+)
 
 log = logging.getLogger(__name__)
 
@@ -67,10 +77,11 @@ class MainWindow(QMainWindow):
     def __init__(self, manager: Manager) -> None:
         super().__init__()
         self.manager = manager
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1200, 760)
         self._busy = False
         self._bridge: TaskBridge | None = None
+        self._update_bridge: TaskBridge | None = None
         self._on_ok: Callable | None = None
         self._progress_dialog: BusyDialog | None = None
 
@@ -173,12 +184,18 @@ class MainWindow(QMainWindow):
         vanilla_action.triggered.connect(self._play_vanilla)
         import_mod_action = self.menuBar().addAction("Import mod file")
         import_mod_action.triggered.connect(self._import_local_mod)
+        help_menu = self.menuBar().addMenu("Help")
+        check_updates = help_menu.addAction("Check for updates…")
+        check_updates.triggered.connect(self._check_for_updates)
+        about = help_menu.addAction("About")
+        about.triggered.connect(self._about)
         self.statusBar().showMessage("Ready")
 
         self._reload_packs()
         self._reload_views()
         if not self.manager.catalog:
             self._refresh_catalog()
+        QTimer.singleShot(4000, self._maybe_check_updates)
 
     def current_pack_id(self) -> str | None:
         item = self.pack_list.currentItem()
@@ -258,6 +275,117 @@ class MainWindow(QMainWindow):
             self.manager.save_config()
             self.manager.reload_http()
             self._reload_views()
+
+    def _about(self) -> None:
+        QMessageBox.about(
+            self,
+            "About",
+            (
+                f"{APP_NAME} {APP_VERSION}\n\n"
+                "Keeps Sailwind vanilla and launches isolated Doorstop ModPacks.\n\n"
+                f"{APP_REPO}"
+            ),
+        )
+
+    def _maybe_check_updates(self) -> None:
+        config = self.manager.config
+        if not config.check_for_updates:
+            return
+        if not update_check_due(config.last_update_check):
+            return
+        if self._busy:
+            QTimer.singleShot(4000, self._maybe_check_updates)
+            return
+        self._start_silent_update_check()
+
+    def _start_silent_update_check(self) -> None:
+        if self._update_bridge is not None:
+            return
+        log.info("Checking GitHub for app updates")
+        bridge = TaskBridge(self)
+        self._update_bridge = bridge
+        queued = Qt.ConnectionType.QueuedConnection
+        bridge.finished.connect(self._silent_update_found, queued)
+        bridge.failed.connect(self._silent_update_failed, queued)
+        run_background(lambda progress: self._lookup_app_update(False, progress), bridge)
+
+    def _lookup_app_update(self, ignore_skipped: bool, progress) -> object:
+        return find_app_update(
+            self.manager.http,
+            current_version=APP_VERSION,
+            skipped_version=self.manager.config.skipped_update_version,
+            ignore_skipped=ignore_skipped,
+            paths=self.manager.paths,
+            progress=progress,
+        )
+
+    @Slot(object)
+    def _silent_update_found(self, result: object) -> None:
+        self._update_bridge = None
+        self.manager.config.last_update_check = utc_now_iso()
+        self.manager.save_config()
+        if isinstance(result, AppUpdate):
+            self._offer_app_update(result)
+
+    @Slot(str)
+    def _silent_update_failed(self, message: str) -> None:
+        self._update_bridge = None
+        log.warning("App update check failed: %s", message)
+
+    def _check_for_updates(self) -> None:
+        self._run(
+            lambda progress: self._lookup_app_update(True, progress),
+            self._manual_update_checked,
+            "Checking for updates…",
+        )
+
+    def _manual_update_checked(self, result: object) -> None:
+        self.manager.config.last_update_check = utc_now_iso()
+        self.manager.save_config()
+        if isinstance(result, AppUpdate):
+            self._offer_app_update(result)
+            return
+        QMessageBox.information(
+            self,
+            "Up to date",
+            f"{APP_NAME} {APP_VERSION} is the latest release on GitHub.",
+        )
+
+    def _offer_app_update(self, update) -> None:
+        dialog = UpdateDialog(update, self)
+        dialog.exec()
+        choice = dialog.choice()
+        if choice == SKIP:
+            self.manager.config.skipped_update_version = update.version
+            self.manager.save_config()
+            self.statusBar().showMessage(f"Skipping {update.version_raw}")
+            return
+        if choice == OPEN:
+            QDesktopServices.openUrl(QUrl(update.html_url))
+            return
+        if choice != UPDATE:
+            return
+        self._run(
+            lambda progress: download_and_stage_update(
+                self.manager.http, update, self.manager.paths, progress=progress
+            ),
+            self._install_app_update,
+            f"Downloading {update.version_raw}…",
+        )
+
+    def _install_app_update(self, payload: object) -> None:
+        if not isinstance(payload, Path):
+            QMessageBox.warning(self, "Update failed", "The update payload was not a folder.")
+            return
+        try:
+            launch_apply_and_exit(payload)
+        except Exception as exc:
+            QMessageBox.critical(self, "Update failed", str(exc))
+            return
+        self.statusBar().showMessage("Installing update…")
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(300, app.quit)
 
     def _new_pack(self) -> None:
         name, ok = QInputDialog.getText(self, "New ModPack", "Name:")
