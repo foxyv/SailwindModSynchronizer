@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import shutil
+import tempfile
+import zipfile
+from pathlib import Path
+
+from sailwind_mod_sync.library.special_mods import COOP_PLUGIN_FOLDER, STEAM_API_DLL
+
+JUNK_NAMES = {".ds_store", "thumbs.db"}
+JUNK_DIRS = {"__macosx"}
+
+
+class ExtractError(ValueError):
+    pass
+
+
+def normalize_plugin_archive(archive: Path, dest: Path) -> list[str]:
+    """Extract a mod zip into dest as plugin folders ready for BepInEx/plugins."""
+    dest.mkdir(parents=True, exist_ok=True)
+    _clear_dir(dest)
+    with tempfile.TemporaryDirectory(prefix="sms-mod-") as tmp:
+        root = Path(tmp) / "extracted"
+        root.mkdir()
+        _safe_extract(archive, root)
+        _strip_junk(root)
+        overlay_root = _unwrap_single_root(root)
+        source = overlay_root
+        plugins = _find_bepinex_plugins(overlay_root)
+        if plugins is not None:
+            source = plugins
+        folders = _copy_plugin_contents(source, dest)
+        _copy_overlay_steam_api(overlay_root, dest, folders)
+        return folders
+
+
+def extract_bepinex_pack(archive: Path, dest: Path) -> Path:
+    dest.mkdir(parents=True, exist_ok=True)
+    _clear_dir(dest)
+    with tempfile.TemporaryDirectory(prefix="sms-bx-") as tmp:
+        root = Path(tmp) / "extracted"
+        root.mkdir()
+        _safe_extract(archive, root)
+        _strip_junk(root)
+        pack_root = _find_bepinex_root(root)
+        for item in pack_root.iterdir():
+            target = dest / item.name
+            if item.is_dir():
+                shutil.copytree(item, target)
+            else:
+                shutil.copy2(item, target)
+    return dest
+
+
+def _safe_extract(archive: Path, dest: Path) -> None:
+    dest = dest.resolve()
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            name = info.filename.replace("\\", "/")
+            if name.endswith("/"):
+                continue
+            target = (dest / name).resolve()
+            if not str(target).startswith(str(dest)):
+                raise ExtractError(f"Zip slip blocked: {info.filename}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, target.open("wb") as out:
+                shutil.copyfileobj(src, out)
+
+
+def _strip_junk(root: Path) -> None:
+    for path in list(root.rglob("*")):
+        if path.is_dir() and path.name.lower() in JUNK_DIRS:
+            shutil.rmtree(path, ignore_errors=True)
+        elif path.is_file() and path.name.lower() in JUNK_NAMES:
+            path.unlink(missing_ok=True)
+
+
+def _unwrap_single_root(root: Path) -> Path:
+    current = root
+    while True:
+        children = _visible_children(current)
+        if len(children) != 1 or not children[0].is_dir():
+            return current
+        inner = children[0]
+        immediate_dlls = [p for p in inner.iterdir() if p.is_file() and p.suffix.lower() == ".dll"]
+        if immediate_dlls:
+            return current
+        current = inner
+
+
+def _find_bepinex_plugins(root: Path) -> Path | None:
+    for path in [root, *root.rglob("*")]:
+        if not path.is_dir():
+            continue
+        if path.name.lower() == "plugins" and path.parent.name.lower() == "bepinex":
+            return path
+    return None
+
+
+def _find_bepinex_root(root: Path) -> Path:
+    for dll in root.rglob("winhttp.dll"):
+        if (dll.parent / "BepInEx").is_dir():
+            return dll.parent
+    for path in root.rglob("*"):
+        if path.is_dir() and path.name == "BepInEx" and (path / "core").exists():
+            return path.parent
+    raise ExtractError("Archive is not a BepInExPack (missing BepInEx/core or winhttp.dll)")
+
+
+def _copy_plugin_contents(source: Path, dest: Path) -> list[str]:
+    folders: list[str] = []
+    dirs = [p for p in _visible_children(source) if p.is_dir()]
+    files = [p for p in _visible_children(source) if p.is_file()]
+    dll_files = [p for p in files if p.suffix.lower() == ".dll"]
+
+    plugin_dirs = [d for d in dirs if any(d.rglob("*.dll"))]
+    if plugin_dirs and not dll_files:
+        for folder in plugin_dirs:
+            _copy_tree(folder, dest / folder.name)
+            folders.append(folder.name)
+        if folders:
+            return folders
+
+    if dll_files:
+        name = dll_files[0].stem if len(dll_files) == 1 else source.name
+        target = dest / name
+        target.mkdir(parents=True, exist_ok=True)
+        for item in _visible_children(source):
+            if item.is_file():
+                shutil.copy2(item, target / item.name)
+            elif item.is_dir() and any(item.rglob("*.dll")):
+                _copy_tree(item, dest / item.name)
+                folders.append(item.name)
+        folders.insert(0, name)
+        return _unique(folders)
+
+    if any(source.rglob("*.dll")):
+        name = source.name if source.name != "extracted" else "plugin"
+        _copy_tree(source, dest / name)
+        return [name]
+
+    raise ExtractError("No plugin DLLs found in archive")
+
+
+def _copy_overlay_steam_api(overlay_root: Path, dest: Path, folders: list[str]) -> None:
+    src = _find_overlay_steam_api(overlay_root)
+    if src is None:
+        return
+    target = _steam_api_plugin_dir(dest, folders)
+    target.mkdir(parents=True, exist_ok=True)
+    dest_dll = target / STEAM_API_DLL
+    if dest_dll.exists():
+        return
+    shutil.copy2(src, dest_dll)
+
+
+def _steam_api_plugin_dir(dest: Path, folders: list[str]) -> Path:
+    for name in folders:
+        if name.lower() == COOP_PLUGIN_FOLDER.lower():
+            return dest / name
+    if folders:
+        return dest / folders[0]
+    return dest / COOP_PLUGIN_FOLDER
+
+
+def _find_overlay_steam_api(overlay_root: Path) -> Path | None:
+    """Locate steam_api64.dll at the game-root of a BepInEx overlay zip."""
+    if not overlay_root.exists():
+        return None
+    for dll in overlay_root.rglob("*"):
+        if not dll.is_file() or dll.name.lower() != STEAM_API_DLL:
+            continue
+        relative = dll.relative_to(overlay_root).parts
+        lowered = [part.lower() for part in relative[:-1]]
+        if "plugins" in lowered or "core" in lowered:
+            continue
+        parent_names = {child.name.lower() for child in dll.parent.iterdir()}
+        if (
+            dll.parent == overlay_root
+            or "bepinex" in parent_names
+            or "winhttp.dll" in parent_names
+            or "sailwind.exe" in parent_names
+        ):
+            return dll
+    return None
+
+
+def _copy_tree(src: Path, dest: Path) -> None:
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+
+
+def _visible_children(path: Path) -> list[Path]:
+    if not path.exists():
+        return []
+    result = []
+    for child in path.iterdir():
+        if child.name.lower() in JUNK_DIRS or child.name.lower() in JUNK_NAMES:
+            continue
+        if child.name.startswith(".") and child.name.lower() not in {".doorstop_version"}:
+            continue
+        result.append(child)
+    return result
+
+
+def _clear_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out

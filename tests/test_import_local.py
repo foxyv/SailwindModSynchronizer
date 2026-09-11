@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import zipfile
+from pathlib import Path
+
+from sailwind_mod_sync.config import AppConfig
+from sailwind_mod_sync.game.scan_plugins import discover_local_file
+from sailwind_mod_sync.http_util import HttpClient
+from sailwind_mod_sync.manager import Manager
+from sailwind_mod_sync.models import PinnedMod
+from sailwind_mod_sync.paths import AppPaths
+
+
+class _NoHttp(HttpClient):
+    def __init__(self) -> None:
+        self.token = ""
+        self._owns_client = False
+        self._client = None
+
+    def close(self) -> None:
+        return None
+
+
+def _dll_bytes(guid: str = "com.nandbrew.savecleaner", version: str = "1.2.3") -> bytes:
+    return b"MZ" + b"\0" * 32 + guid.encode("ascii") + b"\0" + version.encode("ascii") + b"\0" * 16
+
+
+def test_discover_local_dll_reads_guid_and_version(tmp_path: Path) -> None:
+    dll = tmp_path / "SaveCleaner.dll"
+    dll.write_bytes(_dll_bytes())
+    found = discover_local_file(dll)
+    assert len(found) == 1
+    assert found[0].guid == "com.nandbrew.savecleaner"
+    assert found[0].version == "1.2.3"
+
+
+def test_discover_local_zip(tmp_path: Path) -> None:
+    archive = tmp_path / "CoolMod-0.4.0.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("CoolMod/CoolMod.dll", _dll_bytes("com.example.coolmod", "0.4.0"))
+    found = discover_local_file(archive)
+    assert found[0].guid == "com.example.coolmod"
+    assert found[0].version == "0.4.0"
+
+
+def test_discover_rejects_non_plugin(tmp_path: Path) -> None:
+    txt = tmp_path / "notes.txt"
+    txt.write_text("hello", encoding="utf-8")
+    try:
+        discover_local_file(txt)
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "Unsupported" in str(exc)
+
+
+def test_manager_imports_dll_into_pack(paths: AppPaths, tmp_path: Path) -> None:
+    dll = tmp_path / "SaveCleaner-1.1.1.dll"
+    dll.write_bytes(_dll_bytes("com.nandbrew.savecleaner", "1.1.1"))
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    pack = manager.packs.create("Local")
+    pinned = manager.import_local_mod(dll, pack.id)
+    assert pinned.guid == "com.nandbrew.savecleaner"
+    assert pinned.version == "1.1.1"
+    assert manager.library.has_mod(pinned.guid, pinned.version)
+    plugin = manager.packs.plugins_dir(pack.id) / "SaveCleaner" / "SaveCleaner-1.1.1.dll"
+    assert plugin.exists() or (manager.packs.plugins_dir(pack.id) / "SaveCleaner-1.1.1" / "SaveCleaner-1.1.1.dll").exists()
+
+
+def test_import_local_fills_missing_pin(paths: AppPaths, tmp_path: Path) -> None:
+    dll = tmp_path / "Mystery.dll"
+    dll.write_bytes(_dll_bytes("com.nandbrew.savecleaner", "1.1.1"))
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    pack = manager.packs.create("Local")
+    manager.packs.upsert_mod(
+        pack.id,
+        PinnedMod(guid="local.discord.mystery", version="1.0.0", repo=""),
+    )
+    assert manager.missing_mods(manager.packs.get(pack.id))
+    pinned = manager.import_local_mod(dll, pack.id, guid="local.discord.mystery")
+    assert pinned.guid == "local.discord.mystery"
+    assert pinned.version == "1.1.1"
+    assert not manager.missing_mods(manager.packs.get(pack.id))
+    manager.close()

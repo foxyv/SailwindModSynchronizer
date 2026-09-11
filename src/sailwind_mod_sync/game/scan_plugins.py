@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+import re
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+from sailwind_mod_sync.catalog.mvc import find_entry
+from sailwind_mod_sync.models import CatalogEntry, parse_mod_version
+
+LOAD_RE = re.compile(r"Loading \[(.+?) (\d+(?:\.\d+){1,3})\]")
+LOG_GUID_RE = re.compile(r"Plugin ([A-Za-z0-9_.]+) is loaded")
+DLL_GUID_RE = re.compile(
+    rb"(?:com|zzz|pr0skynesis|NatoriusG|DogEggz|dogeggz)\.[A-Za-z0-9_.]{2,80}"
+)
+LOOSE_GUID_RE = re.compile(rb"[A-Za-z][A-Za-z0-9_]{1,40}(?:\.[A-Za-z0-9_]{1,40}){1,6}")
+DLL_VERSION_RE = re.compile(rb"(?:\d+\.){1,3}\d+")
+SKIP_DLL_HINTS = ("bridge", "facepunch", "scripthandler")
+SKIP_GUID_PREFIXES = (
+    "system.",
+    "unityengine.",
+    "unity.",
+    "harmony",
+    "bepinex.",
+    "microsoft.",
+    "mono.",
+    "mscorlib",
+    "netstandard",
+    "newtonsoft.",
+    "assembly-csharp",
+)
+
+
+@dataclass
+class DiscoveredPlugin:
+    name: str
+    guid: str
+    version: str
+    version_raw: str
+    plugin_paths: list[Path]
+    repo: str = ""
+    source: str = ""
+
+
+def scan_plugins_dir(
+    plugins_dir: Path,
+    catalog: list[CatalogEntry] | None = None,
+    log_path: Path | None = None,
+) -> list[DiscoveredPlugin]:
+    catalog = catalog or []
+    log_versions = parse_load_versions(log_path) if log_path and log_path.exists() else {}
+    log_guids = parse_log_guids(log_path) if log_path and log_path.exists() else {}
+    discovered: list[DiscoveredPlugin] = []
+    if not plugins_dir.is_dir():
+        return discovered
+    for child in sorted(plugins_dir.iterdir(), key=lambda p: p.name.lower()):
+        if child.name.startswith("."):
+            continue
+        if child.is_dir():
+            dlls = list(child.rglob("*.dll"))
+            if not dlls:
+                continue
+            unit = _from_unit(child.name, [child], dlls, catalog, log_versions, log_guids)
+        elif child.suffix.lower() == ".dll":
+            unit = _from_unit(child.stem, [child], [child], catalog, log_versions, log_guids)
+        else:
+            continue
+        if unit:
+            discovered.append(unit)
+    return discovered
+
+
+def discover_local_file(path: Path, catalog: list[CatalogEntry] | None = None) -> list[DiscoveredPlugin]:
+    catalog = catalog or []
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    suffix = path.suffix.lower()
+    if suffix == ".dll":
+        unit = _from_unit(path.stem, [path], [path], catalog, {}, {}, loose_guid=True)
+        if unit is None:
+            return []
+        _refine_local_identity(unit, path)
+        return [unit]
+    if suffix == ".zip":
+        return _discover_zip(path, catalog)
+    raise ValueError(f"Unsupported file type: {path.suffix}. Use a .dll or .zip.")
+
+
+def parse_load_versions(log_path: Path) -> dict[str, str]:
+    text = log_path.read_text(encoding="utf-8", errors="ignore")
+    versions: dict[str, str] = {}
+    for match in LOAD_RE.finditer(text):
+        versions[match.group(1)] = match.group(2)
+    return versions
+
+
+def parse_log_guids(log_path: Path) -> dict[str, str]:
+    text = log_path.read_text(encoding="utf-8", errors="ignore")
+    found: dict[str, str] = {}
+    for match in LOG_GUID_RE.finditer(text):
+        guid = match.group(1)
+        found[_norm(guid.split(".")[-1])] = guid
+    return found
+
+
+def extract_guids(dll_path: Path, *, loose: bool = False) -> list[str]:
+    try:
+        data = dll_path.read_bytes()
+    except OSError:
+        return []
+    seen: list[str] = []
+    for match in DLL_GUID_RE.finditer(data):
+        guid = match.group(0).decode("ascii", errors="ignore")
+        if guid not in seen:
+            seen.append(guid)
+    if loose:
+        for guid in _loose_guids(data):
+            if guid not in seen:
+                seen.append(guid)
+    return seen
+
+
+def _from_unit(
+    name: str,
+    paths: list[Path],
+    dlls: list[Path],
+    catalog: list[CatalogEntry],
+    log_versions: dict[str, str],
+    log_guids: dict[str, str],
+    loose_guid: bool = False,
+) -> DiscoveredPlugin | None:
+    main_dlls = [path for path in dlls if not _skip_dll(path)]
+    search_dlls = main_dlls or dlls
+    candidates: list[str] = []
+    for dll in search_dlls:
+        for guid in extract_guids(dll, loose=loose_guid):
+            if guid not in candidates:
+                candidates.append(guid)
+    guid = _pick_guid(name, search_dlls, candidates, catalog, log_guids)
+    if not guid:
+        guid = f"local.{_norm(name)}"
+    entry = find_entry(catalog, guid)
+    version = (
+        _match_log_version(name, guid, log_versions)
+        or (entry.latest_version if entry else None)
+        or "0.0.0"
+    )
+    return DiscoveredPlugin(
+        name=name,
+        guid=guid,
+        version=version,
+        version_raw=version if not version.startswith("v") else version,
+        plugin_paths=paths,
+        repo=entry.repo if entry else "",
+        source=str(paths[0]),
+    )
+
+
+def _pick_guid(
+    name: str,
+    dlls: list[Path],
+    candidates: list[str],
+    catalog: list[CatalogEntry],
+    log_guids: dict[str, str],
+) -> str:
+    name_key = _norm(name)
+    dll_key = _norm("".join(path.stem for path in dlls[:1]))
+    log_guid = log_guids.get(name_key)
+    if log_guid:
+        return log_guid
+    if not candidates:
+        entry = _match_catalog_name(name, catalog)
+        return entry.primary_guid if entry else ""
+
+    def score(guid: str) -> int:
+        guid_key = _norm(guid)
+        tail = _norm(guid.split(".")[-1])
+        points = 0
+        if name_key and name_key in guid_key:
+            points += 50
+        if dll_key and dll_key in guid_key:
+            points += 40
+        if len(tail) >= 4 and (tail == name_key or tail in name_key or name_key in tail):
+            points += 30
+        if len(tail) >= 4 and (tail == dll_key or tail in dll_key or dll_key in tail):
+            points += 20
+        if tail in {"mod", "plugin", "core"}:
+            points -= 8
+        if find_entry(catalog, guid) and points >= 30:
+            points += 10
+        return points
+
+    return max(candidates, key=score)
+
+
+def _match_log_version(name: str, guid: str, log_versions: dict[str, str]) -> str | None:
+    name_tokens = _tokens(name)
+    best: tuple[int, str] | None = None
+    for log_name, version in log_versions.items():
+        if _norm(log_name) == _norm(name) or _norm(log_name) == _norm(guid.split(".")[-1]):
+            return version
+        log_tokens = _tokens(log_name)
+        if not name_tokens or not log_tokens:
+            continue
+        overlap = name_tokens & log_tokens
+        if not overlap:
+            continue
+        score = len(overlap) * 10
+        if name_tokens <= log_tokens:
+            score += 25
+        if log_tokens <= name_tokens:
+            score += 5
+        score -= abs(len(log_tokens) - len(name_tokens))
+        if best is None or score > best[0]:
+            best = (score, version)
+    if best and best[0] >= 20:
+        return best[1]
+    return None
+
+
+def _match_catalog_name(name: str, catalog: list[CatalogEntry]) -> CatalogEntry | None:
+    key = _norm(name)
+    for entry in catalog:
+        if key == _norm(entry.name) or key == _norm(entry.primary_guid.split(".")[-1]):
+            return entry
+        if any(key == _norm(guid.split(".")[-1]) for guid in entry.guids):
+            return entry
+    return None
+
+
+def _skip_dll(path: Path) -> bool:
+    stem = path.stem.lower()
+    return any(hint in stem for hint in SKIP_DLL_HINTS)
+
+
+def _norm(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _tokens(value: str) -> set[str]:
+    parts = re.findall(r"[A-Z]?[a-z]+|[0-9]+", value)
+    if not parts:
+        parts = re.findall(r"[a-z0-9]+", value.lower())
+    skip = {"the", "a", "an", "in", "of", "and", "hms", "sailwind", "mod", "plugin"}
+    return {part.lower() for part in parts if part.lower() not in skip}
+
+
+def _discover_zip(path: Path, catalog: list[CatalogEntry]) -> list[DiscoveredPlugin]:
+    from sailwind_mod_sync.library.extract import (
+        _find_bepinex_plugins,
+        _safe_extract,
+        _strip_junk,
+        _unwrap_single_root,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="sms-import-") as tmp:
+        root = Path(tmp) / "extracted"
+        root.mkdir()
+        _safe_extract(path, root)
+        _strip_junk(root)
+        source = _unwrap_single_root(root)
+        plugins = _find_bepinex_plugins(source)
+        found = scan_plugins_dir(plugins or source, catalog=catalog)
+        refined: list[DiscoveredPlugin] = []
+        for unit in found:
+            dlls = []
+            for item in unit.plugin_paths:
+                if item.is_file() and item.suffix.lower() == ".dll":
+                    dlls.append(item)
+                elif item.is_dir():
+                    dlls.extend(item.rglob("*.dll"))
+            if dlls:
+                extra = _from_unit(unit.name, unit.plugin_paths, dlls, catalog, {}, {}, loose_guid=True)
+                if extra:
+                    unit.guid = extra.guid
+                    unit.repo = extra.repo or unit.repo
+            _refine_local_identity(unit, path)
+            unit.plugin_paths = [path]
+            unit.source = str(path)
+            refined.append(unit)
+        return refined
+
+
+def _refine_local_identity(unit: DiscoveredPlugin, path: Path) -> None:
+    dlls: list[Path] = []
+    for item in unit.plugin_paths:
+        if item.is_file() and item.suffix.lower() == ".dll":
+            dlls.append(item)
+        elif item.is_dir():
+            dlls.extend(item.rglob("*.dll"))
+    dll_version = None
+    for dll in dlls:
+        dll_version = _version_from_dll(dll, unit.guid)
+        if dll_version:
+            break
+    file_version = parse_mod_version(path.stem) or parse_mod_version(path.name)
+    chosen = dll_version or file_version
+    if chosen:
+        unit.version = chosen
+        unit.version_raw = chosen
+
+
+def _loose_guids(data: bytes) -> list[str]:
+    found: list[str] = []
+    for blob in (data, data.decode("utf-16-le", errors="ignore").encode("ascii", errors="ignore")):
+        for match in LOOSE_GUID_RE.finditer(blob):
+            guid = match.group(0).decode("ascii", errors="ignore")
+            lower = guid.lower()
+            if any(lower.startswith(prefix) for prefix in SKIP_GUID_PREFIXES):
+                continue
+            if guid.count(".") < 1:
+                continue
+            if guid not in found:
+                found.append(guid)
+    return found
+
+
+def _version_from_dll(dll_path: Path, guid: str) -> str | None:
+    try:
+        data = dll_path.read_bytes()
+    except OSError:
+        return None
+    windows: list[bytes] = []
+    guid_ascii = guid.encode("ascii", errors="ignore")
+    guid_utf16 = guid.encode("utf-16-le", errors="ignore")
+    for needle in (guid_ascii, guid_utf16):
+        if not needle:
+            continue
+        idx = data.find(needle)
+        if idx >= 0:
+            windows.append(data[idx : idx + 800])
+    windows.append(data[:8192])
+    for window in windows:
+        for match in DLL_VERSION_RE.finditer(window):
+            raw = match.group(0).decode("ascii", errors="ignore")
+            if raw in {"0.0.0", "0.0.0.0", "1.0.0.0", "4.0.0.0"}:
+                continue
+            parsed = parse_mod_version(raw)
+            if parsed and parsed.count(".") >= 1:
+                return parsed
+    return None
+
