@@ -5,6 +5,9 @@ DEFAULT_GAME_PATH = r"D:\SteamLibrary\steamapps\common\Sailwind"
 APP_NAME = "Sailwind Mod Synchronizer"
 APP_VERSION = "0.1.0"
 APP_REPO = "https://github.com/foxyv/SailwindModSynchronizer"
+GITHUB_NEW_TOKEN_URL = (
+    "https://github.com/settings/tokens/new?description=Sailwind+Mod+Synchronizer"
+)
 USER_AGENT = f"SailwindModSynchronizer/{APP_VERSION}"
 UPDATE_CHECK_HOURS = 24
 

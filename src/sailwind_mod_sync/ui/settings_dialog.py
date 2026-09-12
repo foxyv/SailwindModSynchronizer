@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailwind_mod_sync.config import AppConfig
+from sailwind_mod_sync.constants import GITHUB_NEW_TOKEN_URL
 from sailwind_mod_sync.paths import AppPaths
 
 
@@ -41,11 +42,17 @@ class SettingsDialog(QDialog):
         self.token.setEchoMode(QLineEdit.EchoMode.Password)
         self.show_token = QCheckBox("Show")
         self.show_token.toggled.connect(self._toggle_token)
+        self.create_token = QPushButton("Create…")
+        self.create_token.setToolTip(
+            "Open GitHub to create a personal access token. No scopes are needed for public repositories."
+        )
+        self.create_token.clicked.connect(self._open_github_token_page)
         token_row = QWidget()
         token_layout = QHBoxLayout(token_row)
         token_layout.setContentsMargins(0, 0, 0, 0)
         token_layout.addWidget(self.token)
         token_layout.addWidget(self.show_token)
+        token_layout.addWidget(self.create_token)
 
         data_label = QLabel(str(paths.root))
         data_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -80,7 +87,8 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         hint = QLabel(
-            "A GitHub token is optional but recommended. Unauthenticated API calls are limited to 60/hour."
+            "A GitHub token is optional but recommended. Unauthenticated API calls are limited to 60/hour. "
+            "Create a classic token; no scopes are required for public repositories."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -90,6 +98,9 @@ class SettingsDialog(QDialog):
     def _toggle_token(self, checked: bool) -> None:
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
         self.token.setEchoMode(mode)
+
+    def _open_github_token_page(self) -> None:
+        QDesktopServices.openUrl(QUrl(GITHUB_NEW_TOKEN_URL))
 
     def _browse_game(self) -> None:
         start = self.game_path.text() or str(Path.home())

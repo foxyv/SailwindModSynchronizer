@@ -30,7 +30,7 @@ def repo_or_find_button(
     page = repo_page_url(repo)
     if page:
         return repo_button(repo, parent)
-    button = QPushButton("Find repo", parent)
-    button.setToolTip("Enter a GitHub or GitLab URL for this mod")
+    button = QPushButton("Associate", parent)
+    button.setToolTip("Link this local plugin to a GitHub catalog entry, or paste a repository URL")
     button.clicked.connect(lambda _=False: on_find())
     return button

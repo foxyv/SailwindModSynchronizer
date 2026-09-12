@@ -31,7 +31,7 @@ class VersionRow:
 
     @property
     def label(self) -> str:
-        extras = ["in library"] if self.in_library else ["download"]
+        extras = ["downloaded"] if self.in_library else ["download"]
         if self.current:
             extras.append("current")
         return f"{self.version_raw or self.version}  ({', '.join(extras)})"
@@ -117,6 +117,7 @@ class SelectVersionDialog(QDialog):
         library_versions: list[tuple[str, str]] | None = None,
         repo: str = "",
         parent: QWidget | None = None,
+        adding: bool = False,
     ) -> None:
         super().__init__(parent)
         self._closed = False
@@ -129,13 +130,19 @@ class SelectVersionDialog(QDialog):
         self.setWindowTitle(f"Select version — {title}")
         self.resize(460, 420)
 
-        hint = QLabel(
-            f"Choose the version of {title} this pack should use. "
-            "Versions already in the library are applied immediately; others are downloaded."
-        )
+        if adding:
+            hint = QLabel(
+                f"Choose the version of {title} to add to the pack. "
+                "It downloads automatically if it is not already cached."
+            )
+        else:
+            hint = QLabel(
+                f"Choose the version of {title} this pack should use. "
+                "Cached versions apply immediately; others are downloaded."
+            )
         hint.setWordWrap(True)
 
-        self.status = QLabel("" if repo else "No repository URL. Use Find repo to download other releases.")
+        self.status = QLabel("" if repo else "No repository URL. Use Associate to download other releases.")
         self.status.setWordWrap(True)
 
         self.list = QListWidget()

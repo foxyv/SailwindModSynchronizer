@@ -9,7 +9,7 @@ from sailwind_mod_sync.config import AppConfig
 from sailwind_mod_sync.http_util import HttpClient
 from sailwind_mod_sync.library.special_mods import COOP_GUID
 from sailwind_mod_sync.manager import Manager
-from sailwind_mod_sync.models import PinnedMod, RemoteRelease
+from sailwind_mod_sync.models import CatalogEntry, PinnedMod, RemoteRelease
 from sailwind_mod_sync.paths import AppPaths
 
 
@@ -270,6 +270,47 @@ def test_set_mod_repo_updates_pack_and_library(paths: AppPaths, tmp_path: Path) 
     manager.close()
 
 
+def test_associate_mod_remaps_local_guid(paths: AppPaths, tmp_path: Path) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    archive = _zip_with(tmp_path / "mod.zip", {"StickyFix/StickyFix.dll": b"MZ"})
+    manager.library.ingest_mod_zip(
+        "local.stickyfix",
+        "1.2.0",
+        archive,
+        version_raw="1.2.0",
+        repo="",
+        source_url="bepinex",
+    )
+    pack = manager.packs.create("Game")
+    manager.packs.upsert_mod(
+        pack.id,
+        PinnedMod(guid="local.stickyfix", version="1.2.0", repo="", plugin_folders=["StickyFix"]),
+    )
+    entry = CatalogEntry(
+        repo="https://github.com/NANDbrew/StickyFix",
+        guids=["com.nandbrew.stickyfix"],
+        primary_guid="com.nandbrew.stickyfix",
+        name="StickyFix",
+        latest_raw="v1.3.0",
+        latest_version="1.3.0",
+        available=True,
+    )
+    manager.catalog = [entry]
+    new_guid = manager.associate_mod("local.stickyfix", "1.2.0", catalog_entry=entry)
+    assert new_guid == "com.nandbrew.stickyfix"
+    assert manager.library.has_mod("com.nandbrew.stickyfix", "1.2.0")
+    assert not manager.library.has_mod("local.stickyfix", "1.2.0")
+    pinned = manager.packs.get(pack.id).find_mod("com.nandbrew.stickyfix")
+    assert pinned is not None
+    assert pinned.repo == "https://github.com/NANDbrew/StickyFix"
+    assert manager.packs.get(pack.id).find_mod("local.stickyfix") is None
+    meta = manager.library.read_mod_meta("com.nandbrew.stickyfix", "1.2.0")
+    assert meta is not None
+    assert meta.guid == "com.nandbrew.stickyfix"
+    assert meta.repo == "https://github.com/NANDbrew/StickyFix"
+    manager.close()
+
+
 def test_play_coop_pack_sets_dll_search_path(paths: AppPaths, tmp_path: Path) -> None:
     game = tmp_path / "Sailwind"
     game.mkdir()
@@ -375,11 +416,14 @@ def test_add_catalog_repo_is_kept_after_reload(paths: AppPaths, tmp_path: Path, 
 
     monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", fake_fetch)
     manager = Manager(paths=paths, config=AppConfig(), http=_Http())
-    entry = manager.add_catalog_repo("https://github.com/example/coolmod")
+    entries = manager.add_catalog_repo("https://github.com/example/coolmod")
+    assert len(entries) == 1
+    entry = entries[0]
     assert entry.custom
     assert entry.primary_guid == "com.example.coolmod"
     assert entry.latest_version == "1.2.0"
     assert entry.repo == "https://github.com/example/coolmod"
+    assert entry.name == "CoolMod"
     manager.close()
 
     reloaded = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
@@ -395,10 +439,66 @@ def test_add_catalog_repo_is_kept_after_reload(paths: AppPaths, tmp_path: Path, 
     reloaded.close()
 
 
-def test_add_catalog_repo_rejects_mvc_duplicate(paths: AppPaths) -> None:
-    from sailwind_mod_sync.models import CatalogEntry
+def test_add_catalog_repo_splits_multi_plugin_release(paths: AppPaths, tmp_path: Path, monkeypatch) -> None:
+    from sailwind_mod_sync.models import ReleaseAsset, RemoteRelease
 
-    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    archive = tmp_path / "ShatteredSeas.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "Shattered Seas Small/ShroudSmall.dll",
+            b"MZ" + b"\0" * 16 + b"com.TheOriginOfAllEvil.riverSloop\0",
+        )
+        zf.writestr(
+            "Shattered Seas Large/Clipper.dll",
+            b"MZ" + b"\0" * 16 + b"com.TheOriginOfAllEvil.clipper\0",
+        )
+
+    class _Http(_NoHttp):
+        def download(self, url, dest, progress=None):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(archive.read_bytes())
+
+    def fake_fetch(*args, **kwargs):
+        return RemoteRelease(
+            tag="b1.2.8",
+            name="b1.2.8",
+            assets=[ReleaseAsset("ShatteredSeas.zip", "https://example/ShatteredSeas.zip")],
+        )
+
+    monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", fake_fetch)
+    manager = Manager(paths=paths, config=AppConfig(), http=_Http())
+    entries = manager.add_catalog_repo("https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion")
+    names = sorted(entry.name for entry in entries)
+    assert names == ["Shattered Seas Large", "Shattered Seas Small"]
+    by_name = {entry.name: entry for entry in entries}
+    assert by_name["Shattered Seas Small"].primary_guid == "com.TheOriginOfAllEvil.riverSloop"
+    assert by_name["Shattered Seas Small"].plugin_folders == ["Shattered Seas Small"]
+    assert by_name["Shattered Seas Large"].primary_guid == "com.TheOriginOfAllEvil.clipper"
+    assert by_name["Shattered Seas Large"].repo.endswith("Shattered-Seas-Expansion")
+    manager.close()
+
+
+def test_add_catalog_repo_rejects_mvc_duplicate(paths: AppPaths, tmp_path: Path, monkeypatch) -> None:
+    from sailwind_mod_sync.models import CatalogEntry, ReleaseAsset, RemoteRelease
+
+    archive = tmp_path / "StickyFix.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("StickyFix/StickyFix.dll", b"MZ" + b"\0" * 16 + b"com.nandbrew.stickyfix\0")
+
+    class _Http(_NoHttp):
+        def download(self, url, dest, progress=None):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(archive.read_bytes())
+
+    def fake_fetch(*args, **kwargs):
+        return RemoteRelease(
+            tag="v1.0.0",
+            name="v1.0.0",
+            assets=[ReleaseAsset("StickyFix.zip", "https://example/StickyFix.zip")],
+        )
+
+    monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", fake_fetch)
+    manager = Manager(paths=paths, config=AppConfig(), http=_Http())
     manager.catalog = [
         CatalogEntry(
             repo="https://github.com/NANDbrew/StickyFix",
@@ -412,9 +512,9 @@ def test_add_catalog_repo_rejects_mvc_duplicate(paths: AppPaths) -> None:
     ]
     try:
         manager.add_catalog_repo("https://github.com/NANDbrew/StickyFix")
-        raise AssertionError("expected duplicate catalog repo to fail")
+        raise AssertionError("expected duplicate catalog plugin to fail")
     except ValueError as exc:
-        assert "ModVersionChecker" in str(exc)
+        assert "already in the catalog" in str(exc)
     manager.close()
 
 
@@ -453,6 +553,64 @@ def test_local_mod_details_lists_installed_versions(paths: AppPaths, tmp_path: P
     assert details.installed_versions == ["1.1.0", "1.0.0"]
     assert details.catalog_latest == "v1.2.0"
     assert details.pack_pins == [("Crew", "1.1.0")]
+    manager.close()
+
+
+def test_catalog_mod_details_without_download(paths: AppPaths) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.catalog = [
+        CatalogEntry(
+            repo="https://github.com/example/mod",
+            guids=["com.example.mod"],
+            primary_guid="com.example.mod",
+            name="Example Mod",
+            latest_raw="v1.2.0",
+            latest_version="1.2.0",
+            available=True,
+        )
+    ]
+    pack = manager.packs.create("Crew")
+    manager.packs.upsert_mod(
+        pack.id,
+        PinnedMod(guid="com.example.mod", version="1.0.0", repo="https://github.com/example/mod"),
+    )
+    details = manager.catalog_mod_details("com.example.mod")
+    assert details.name == "Example Mod"
+    assert details.version == "1.2.0"
+    assert details.repo == "https://github.com/example/mod"
+    assert details.catalog_latest == "v1.2.0"
+    assert details.installed_versions == []
+    assert details.pack_pins == [("Crew", "1.0.0")]
+    manager.close()
+
+
+def test_catalog_mod_details_uses_downloaded_copy(paths: AppPaths, tmp_path: Path) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    archive = _zip_with(tmp_path / "mod.zip", {"Mod/Mod.dll": b"MZ"})
+    manager.library.ingest_mod_zip(
+        "com.example.mod",
+        "1.1.0",
+        archive,
+        version_raw="v1.1.0",
+        repo="https://github.com/example/mod",
+        source_url="https://example/mod.zip",
+    )
+    manager.catalog = [
+        CatalogEntry(
+            repo="https://github.com/example/mod",
+            guids=["com.example.mod"],
+            primary_guid="com.example.mod",
+            name="Example Mod",
+            latest_raw="v1.2.0",
+            latest_version="1.2.0",
+            available=True,
+        )
+    ]
+    details = manager.catalog_mod_details("com.example.mod")
+    assert details.version == "1.1.0"
+    assert details.installed_versions == ["1.1.0"]
+    assert details.catalog_latest == "v1.2.0"
+    assert details.filename
     manager.close()
 
 

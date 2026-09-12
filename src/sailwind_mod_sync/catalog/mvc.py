@@ -10,7 +10,7 @@ from sailwind_mod_sync.constants import (
     JSDELIVR_VERSIONS,
 )
 from sailwind_mod_sync.http_util import HttpClient, HttpError, ProgressFn
-from sailwind_mod_sync.models import CatalogEntry, parse_mod_version
+from sailwind_mod_sync.models import CatalogEntry, catalog_mod_name, guid_family, parse_mod_version
 from sailwind_mod_sync.paths import AppPaths
 
 
@@ -61,7 +61,8 @@ def merge_catalog(mod_list: list, versions: list) -> list[CatalogEntry]:
         if guid:
             version_by_guid[guid] = "" if raw is None else str(raw).strip()
 
-    by_repo: dict[str, dict] = {}
+    by_key: dict[tuple[str, str], dict] = {}
+    families_for_repo: dict[str, set[str]] = {}
     for item in mod_list:
         if not isinstance(item, dict):
             continue
@@ -69,10 +70,12 @@ def merge_catalog(mod_list: list, versions: list) -> list[CatalogEntry]:
         repo = str(item.get("repo") or "").strip().rstrip("/")
         if not guid or not repo:
             continue
-        bucket = by_repo.setdefault(
-            repo,
+        family = guid_family(guid)
+        bucket = by_key.setdefault(
+            (repo, family),
             {"guids": [], "raw": None, "unavailable": False},
         )
+        families_for_repo.setdefault(repo, set()).add(family)
         if guid not in bucket["guids"]:
             bucket["guids"].append(guid)
         raw = version_by_guid.get(guid)
@@ -87,18 +90,19 @@ def merge_catalog(mod_list: list, versions: list) -> list[CatalogEntry]:
             bucket["unavailable"] = False
 
     entries: list[CatalogEntry] = []
-    for repo, bucket in by_repo.items():
+    for (repo, _family), bucket in by_key.items():
         guids: list[str] = bucket["guids"]
         primary = _pick_primary_guid(guids)
         raw = bucket["raw"]
         normalized = parse_mod_version(raw)
         available = bool(normalized) and not bucket["unavailable"]
+        split_repo = len(families_for_repo.get(repo, ())) > 1
         entries.append(
             CatalogEntry(
                 repo=repo,
                 guids=list(guids),
                 primary_guid=primary,
-                name=_name_from_repo(repo),
+                name=_name_from_guid(primary) if split_repo else _name_from_repo(repo),
                 latest_raw=raw,
                 latest_version=normalized,
                 available=available,
@@ -127,6 +131,10 @@ def _fetch_json_list(http: HttpClient, primary: str, fallback: str) -> list:
 
 def _name_from_repo(repo: str) -> str:
     return repo.rstrip("/").split("/")[-1] or repo
+
+
+def _name_from_guid(guid: str) -> str:
+    return catalog_mod_name(guid)
 
 
 def _pick_primary_guid(guids: list[str]) -> str:

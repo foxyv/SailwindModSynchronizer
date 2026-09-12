@@ -4,7 +4,7 @@ import json
 import logging
 
 from sailwind_mod_sync.catalog.github import canonicalize_repo_url
-from sailwind_mod_sync.models import CatalogEntry, parse_mod_version
+from sailwind_mod_sync.models import CatalogEntry, catalog_mod_name, guid_family, parse_mod_version
 from sailwind_mod_sync.paths import AppPaths
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def load_custom_catalog(paths: AppPaths) -> list[CatalogEntry]:
     for item in data:
         entry = _entry_from_dict(item)
         if entry is not None:
-            entries.append(entry)
+            entries.extend(_split_multi_mod_entry(entry))
     return entries
 
 
@@ -37,8 +37,10 @@ def save_custom_catalog(paths: AppPaths, entries: list[CatalogEntry]) -> None:
 def upsert_custom_entry(entries: list[CatalogEntry], incoming: CatalogEntry) -> list[CatalogEntry]:
     out: list[CatalogEntry] = []
     replaced = False
+    incoming_guids = set(incoming.guids) | {incoming.primary_guid}
     for entry in entries:
-        if same_repo(entry.repo, incoming.repo):
+        overlap = incoming_guids & (set(entry.guids) | {entry.primary_guid})
+        if overlap:
             out.append(incoming)
             replaced = True
         else:
@@ -58,16 +60,19 @@ def remove_custom_entry(entries: list[CatalogEntry], guid: str) -> list[CatalogE
 
 
 def merge_with_custom(mvc: list[CatalogEntry], custom: list[CatalogEntry]) -> list[CatalogEntry]:
-    repos = {_repo_key(entry.repo) for entry in mvc}
     guids = {guid for entry in mvc for guid in entry.guids}
     extra: list[CatalogEntry] = []
     for entry in custom:
         entry.custom = True
-        if _repo_key(entry.repo) in repos:
+        leftover = [guid for guid in entry.guids if guid not in guids]
+        if not leftover:
             continue
-        if any(guid in guids for guid in entry.guids):
-            continue
+        if leftover != list(entry.guids):
+            entry.guids = leftover
+            if entry.primary_guid not in leftover:
+                entry.primary_guid = leftover[0]
         extra.append(entry)
+        guids.update(entry.guids)
     combined = list(mvc) + extra
     combined.sort(key=lambda item: item.name.lower())
     return combined
@@ -105,6 +110,10 @@ def _entry_from_dict(data: object) -> CatalogEntry | None:
     raw_text = None if raw is None else str(raw).strip()
     version = parse_mod_version(str(data.get("latest_version") or raw_text or ""))
     name = str(data.get("name") or "").strip() or repo.rstrip("/").split("/")[-1]
+    folders_raw = data.get("plugin_folders") or []
+    if not isinstance(folders_raw, list):
+        folders_raw = []
+    folders = [str(item).strip() for item in folders_raw if str(item).strip()]
     return CatalogEntry(
         repo=repo,
         guids=guids,
@@ -114,6 +123,7 @@ def _entry_from_dict(data: object) -> CatalogEntry | None:
         latest_version=version,
         available=bool(version),
         custom=True,
+        plugin_folders=folders,
     )
 
 
@@ -125,4 +135,32 @@ def _entry_to_dict(entry: CatalogEntry) -> dict:
         "name": entry.name,
         "latest_raw": entry.latest_raw,
         "latest_version": entry.latest_version,
+        "plugin_folders": list(entry.plugin_folders),
     }
+
+
+def _split_multi_mod_entry(entry: CatalogEntry) -> list[CatalogEntry]:
+    groups: dict[str, list[str]] = {}
+    for guid in entry.guids:
+        groups.setdefault(guid_family(guid), []).append(guid)
+    if len(groups) <= 1:
+        return [entry]
+    split: list[CatalogEntry] = []
+    for guids in groups.values():
+        primary = guids[0]
+        if entry.primary_guid in guids:
+            primary = entry.primary_guid
+        split.append(
+            CatalogEntry(
+                repo=entry.repo,
+                guids=list(guids),
+                primary_guid=primary,
+                name=catalog_mod_name(primary),
+                latest_raw=entry.latest_raw,
+                latest_version=entry.latest_version,
+                available=entry.available,
+                custom=True,
+                plugin_folders=[],
+            )
+        )
+    return split

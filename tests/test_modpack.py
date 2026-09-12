@@ -73,6 +73,38 @@ def test_duplicate_and_delete(paths: AppPaths) -> None:
     assert copy.id in ids
 
 
+def test_duplicate_copies_config_and_skips_logs(paths: AppPaths) -> None:
+    store = PackStore(paths)
+    original = store.create("Crew")
+    instance = store.instance_dir(original.id)
+    config = instance / "BepInEx" / "config" / "mod.cfg"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("enabled = true", encoding="utf-8")
+    log_file = instance / "BepInEx" / "LogOutput.log"
+    log_file.write_text("busy log", encoding="utf-8")
+    copy = store.duplicate(original.id, "Crew copy")
+    dest = store.instance_dir(copy.id)
+    assert (dest / "BepInEx" / "config" / "mod.cfg").read_text(encoding="utf-8") == "enabled = true"
+    assert not (dest / "BepInEx" / "LogOutput.log").exists()
+    assert {pack.name for pack in store.list_packs()} == {"Crew", "Crew copy"}
+
+
+def test_duplicate_keeps_pack_when_instance_copy_fails(paths: AppPaths, monkeypatch) -> None:
+    import shutil
+
+    store = PackStore(paths)
+    original = store.create("Crew")
+    (store.instance_dir(original.id) / "BepInEx" / "config").mkdir(parents=True, exist_ok=True)
+
+    def boom(*_args, **_kwargs):
+        raise PermissionError("LogOutput.log is locked")
+
+    monkeypatch.setattr(shutil, "copytree", boom)
+    copy = store.duplicate(original.id, "Crew copy")
+    assert copy.name == "Crew copy"
+    assert {pack.name for pack in store.list_packs()} == {"Crew", "Crew copy"}
+
+
 def test_rename_keeps_id(paths: AppPaths) -> None:
     store = PackStore(paths)
     pack = store.create("Old Name")

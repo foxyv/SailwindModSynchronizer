@@ -3,8 +3,12 @@
 Usage (from the repo root, with the project venv active):
 
     python scripts/build.py
+    python scripts/build.py --release
     python scripts/build.py --skip-shortcut
     python scripts/build.py --console
+
+Default is an incremental freeze: reuse the PyInstaller cache, skip UPX, and skip
+the GitHub zip. Pass --release for a clean freeze and a versioned zip.
 """
 
 from __future__ import annotations
@@ -68,11 +72,20 @@ QT_EXCLUDES = [
 ]
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compile Sailwind Mod Synchronizer to an executable.")
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="Clean freeze and write a versioned zip for a GitHub release.",
+    )
     parser.add_argument("--skip-shortcut", action="store_true", help="Do not create a Desktop shortcut.")
     parser.add_argument("--console", action="store_true", help="Show a console window (useful for debugging).")
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     os.chdir(REPO_ROOT)
     scripts_dir = str(Path(__file__).resolve().parent)
@@ -83,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _ensure_build_deps()
     write_ico(PNG_ICON, ICO_ICON)
-    _run_pyinstaller(windowed=not args.console)
+    _run_pyinstaller(windowed=not args.console, clean=args.release)
 
     exe = DIST_DIR / f"{EXE_NAME}.exe"
     if not exe.is_file():
@@ -92,10 +105,14 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copy2(ICO_ICON, DIST_DIR / "icon.ico")
     print(f"Built {exe}")
 
-    version = _app_version()
-    archive = zip_dist(DIST_DIR, REPO_ROOT / "dist" / f"{EXE_NAME}-{version}-windows.zip")
-    print(f"Release zip {archive}")
-    print("Upload that zip to a GitHub release so the app can auto-update.")
+    if args.release:
+        version = _app_version()
+        archive = zip_dist(DIST_DIR, REPO_ROOT / "dist" / f"{EXE_NAME}-{version}-windows.zip")
+        print(f"Release zip {archive}")
+        print("Upload that zip to a GitHub release so the app can auto-update.")
+    else:
+        print("Incremental freeze (cache reused, no GitHub zip).")
+        print("Use --release for a clean build and a versioned zip.")
 
     if not args.skip_shortcut:
         shortcut = create_desktop_shortcut(exe, DIST_DIR / "icon.ico")
@@ -144,31 +161,38 @@ def zip_dist(source: Path, dest: Path) -> Path:
     return dest
 
 
-def _run_pyinstaller(*, windowed: bool) -> None:
-    import PyInstaller.__main__
-
+def pyinstaller_args(*, windowed: bool, clean: bool) -> list[str]:
     add_data_sep = ";" if os.name == "nt" else ":"
-    args = [
-        "--noconfirm",
-        "--clean",
-        "--name",
-        EXE_NAME,
-        "--icon",
-        str(ICO_ICON),
-        "--paths",
-        str(REPO_ROOT / "src"),
-        "--collect-submodules",
-        "sailwind_mod_sync",
-        "--add-data",
-        f"{ICO_ICON}{add_data_sep}assets",
-        "--add-data",
-        f"{PNG_ICON}{add_data_sep}assets",
-        str(REPO_ROOT / "src" / "sailwind_mod_sync" / "__main__.py"),
-    ]
-    args.insert(2, "--windowed" if windowed else "--console")
+    args = ["--noconfirm", "--noupx"]
+    if clean:
+        args.append("--clean")
+    args.extend(
+        [
+            "--windowed" if windowed else "--console",
+            "--name",
+            EXE_NAME,
+            "--icon",
+            str(ICO_ICON),
+            "--paths",
+            str(REPO_ROOT / "src"),
+            "--collect-submodules",
+            "sailwind_mod_sync",
+            "--add-data",
+            f"{ICO_ICON}{add_data_sep}assets",
+            "--add-data",
+            f"{PNG_ICON}{add_data_sep}assets",
+            str(REPO_ROOT / "src" / "sailwind_mod_sync" / "__main__.py"),
+        ]
+    )
     for module in QT_EXCLUDES:
         args.extend(["--exclude-module", module])
-    PyInstaller.__main__.run(args)
+    return args
+
+
+def _run_pyinstaller(*, windowed: bool, clean: bool) -> None:
+    import PyInstaller.__main__
+
+    PyInstaller.__main__.run(pyinstaller_args(windowed=windowed, clean=clean))
 
 
 def desktop_dir() -> Path:

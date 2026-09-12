@@ -1,30 +1,36 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from sailwind_mod_sync.models import CatalogEntry, ModPack, is_newer
+from sailwind_mod_sync.catalog.custom import same_repo
+from sailwind_mod_sync.models import CatalogEntry, ModPack, PinnedMod, is_newer
 from sailwind_mod_sync.ui.links import repo_button
-from sailwind_mod_sync.ui.tables import enable_column_resize
+from sailwind_mod_sync.ui.tables import (
+    enable_column_resize,
+    enable_column_sort,
+    sortable_item,
+    sorting_paused,
+    version_sort_key,
+)
 
 
 class CatalogView(QWidget):
     install_requested = Signal(str)
     remove_custom_requested = Signal(str)
+    details_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._entries: list[CatalogEntry] = []
         self._pack: ModPack | None = None
-        self._library_versions: dict[str, set[str]] = {}
         self._filter = QLineEdit()
         self._filter.setPlaceholderText("Filter catalog…")
         self._filter.textChanged.connect(self._apply_filter)
@@ -38,8 +44,11 @@ class CatalogView(QWidget):
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Name", "GUID", "Latest", "Status", ""])
         enable_column_resize(self.table, [180, 240, 90, 120, 320])
+        enable_column_sort(self.table, default_column=0)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setToolTip("Double-click a mod for details")
+        self.table.cellDoubleClicked.connect(self._on_double_click)
 
         top = QHBoxLayout()
         top.addWidget(self._filter)
@@ -50,15 +59,9 @@ class CatalogView(QWidget):
         layout.addLayout(top)
         layout.addWidget(self.table)
 
-    def set_data(
-        self,
-        entries: list[CatalogEntry],
-        pack: ModPack | None,
-        library_versions: dict[str, set[str]] | None = None,
-    ) -> None:
+    def set_data(self, entries: list[CatalogEntry], pack: ModPack | None) -> None:
         self._entries = entries
         self._pack = pack
-        self._library_versions = library_versions or {}
         self._apply_filter()
 
     def _apply_filter(self) -> None:
@@ -72,58 +75,114 @@ class CatalogView(QWidget):
             or query in entry.repo.lower()
             or any(query in guid.lower() for guid in entry.guids)
         ]
-        self.table.setRowCount(len(rows))
-        for index, entry in enumerate(rows):
-            status = _catalog_status(entry, self._pack)
-            self.table.setItem(index, 0, QTableWidgetItem(entry.name))
-            guid_item = QTableWidgetItem(entry.guid_label)
-            guid_item.setToolTip("\n".join(entry.guids))
-            self.table.setItem(index, 1, guid_item)
-            latest = entry.latest_raw or ("none" if not entry.available else "")
-            self.table.setItem(index, 2, QTableWidgetItem(latest))
-            self.table.setItem(index, 3, QTableWidgetItem(status))
-            actions = QWidget()
-            actions_layout = QHBoxLayout(actions)
-            actions_layout.setContentsMargins(4, 0, 4, 0)
-            actions_layout.addWidget(repo_button(entry.repo, actions))
-            label, tip = catalog_library_button(entry, self._library_versions)
-            button = QPushButton(label)
-            button.setEnabled(entry.available)
-            button.setToolTip(tip)
-            guid = entry.primary_guid
-            button.clicked.connect(lambda _=False, value=guid: self.install_requested.emit(value))
-            actions_layout.addWidget(button)
-            if entry.custom:
-                remove = QPushButton("Remove")
-                remove.setToolTip("Remove this repository from your catalog")
-                remove.clicked.connect(
-                    lambda _=False, value=guid: self.remove_custom_requested.emit(value)
-                )
-                actions_layout.addWidget(remove)
-            self.table.setCellWidget(index, 4, actions)
+        with sorting_paused(self.table):
+            self.table.setRowCount(len(rows))
+            for index, entry in enumerate(rows):
+                status = _catalog_status(entry, self._pack)
+                self.table.setItem(index, 0, sortable_item(entry.name))
+                guid_item = sortable_item(entry.guid_label, entry.primary_guid.casefold())
+                guid_item.setToolTip("\n".join(entry.guids))
+                self.table.setItem(index, 1, guid_item)
+                latest = entry.latest_raw or ("none" if not entry.available else "")
+                latest_key = (0 if entry.available else 1, version_sort_key(entry.latest_raw))
+                self.table.setItem(index, 2, sortable_item(latest, latest_key))
+                self.table.setItem(index, 3, sortable_item(status))
+                self.table.setItem(index, 4, sortable_item(""))
+                actions = QWidget()
+                actions_layout = QHBoxLayout(actions)
+                actions_layout.setContentsMargins(4, 0, 4, 0)
+                actions_layout.addWidget(repo_button(entry.repo, actions))
+                label, tip = catalog_pack_button(entry, self._pack)
+                button = QPushButton(label)
+                button.setEnabled(entry.available and self._pack is not None)
+                if self._pack is None:
+                    button.setToolTip("Select a ModPack first")
+                else:
+                    button.setToolTip(tip)
+                guid = entry.primary_guid
+                button.clicked.connect(lambda _=False, value=guid: self.install_requested.emit(value))
+                actions_layout.addWidget(button)
+                if entry.custom:
+                    remove = QPushButton("Remove")
+                    remove.setToolTip("Remove this repository from your catalog")
+                    remove.clicked.connect(
+                        lambda _=False, value=guid: self.remove_custom_requested.emit(value)
+                    )
+                    actions_layout.addWidget(remove)
+                self.table.setCellWidget(index, 4, actions)
+
+    def reveal_mod(self, guid: str, repo: str = "") -> bool:
+        target = None
+        for entry in self._entries:
+            if guid and (guid == entry.primary_guid or guid in entry.guids):
+                target = entry
+                break
+        if target is None and repo:
+            for entry in self._entries:
+                if same_repo(entry.repo, repo):
+                    target = entry
+                    break
+        if target is None:
+            return False
+        if self._filter.text():
+            self._filter.clear()
+        key = target.primary_guid.casefold()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)
+            if item is None:
+                continue
+            stored = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if stored == key or target.primary_guid in item.toolTip().splitlines():
+                self.table.selectRow(row)
+                self.table.scrollToItem(item)
+                self.table.setCurrentCell(row, 0)
+                return True
+        return False
+
+    def _on_double_click(self, row: int, _column: int) -> None:
+        guid = self._guid_at_row(row)
+        if guid:
+            self.details_requested.emit(guid)
+
+    def _guid_at_row(self, row: int) -> str:
+        item = self.table.item(row, 1)
+        if item is None:
+            return ""
+        key = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        for entry in self._entries:
+            if entry.primary_guid.casefold() == key:
+                return entry.primary_guid
+            if entry.primary_guid in item.toolTip().splitlines():
+                return entry.primary_guid
+        return ""
 
 
-def catalog_library_button(
-    entry: CatalogEntry,
-    library_versions: dict[str, set[str]] | None,
-) -> tuple[str, str]:
-    owned: list[str] = []
-    for guid in entry.guids:
-        owned.extend((library_versions or {}).get(guid, ()))
-    if not owned:
+def catalog_pack_button(entry: CatalogEntry, pack: ModPack | None) -> tuple[str, str]:
+    pinned = _pinned_for_entry(entry, pack)
+    if pinned is None:
         return (
-            "Add to library",
-            "Download into the library and add it to the selected pack",
+            "Add to pack",
+            "Download this mod and add it to the selected pack. You can choose a version.",
         )
-    if entry.latest_raw and any(is_newer(entry.latest_raw, version) for version in owned):
+    if entry.latest_raw and is_newer(entry.latest_raw, pinned.version):
         return (
             "Update",
-            "A newer version is available. Download it into the library and add it to the selected pack",
+            "A newer version is available. Choose a version to download and pin on the pack.",
         )
     return (
-        "In library",
-        "This mod is already in the library. Click to add it to the selected pack.",
+        "In pack",
+        f"Already in the pack at {pinned.version_raw or pinned.version}. Click to choose a different version.",
     )
+
+
+def _pinned_for_entry(entry: CatalogEntry, pack: ModPack | None) -> PinnedMod | None:
+    if pack is None:
+        return None
+    for guid in entry.guids:
+        pinned = pack.find_mod(guid)
+        if pinned is not None:
+            return pinned
+    return None
 
 
 def _catalog_status(entry: CatalogEntry, pack: ModPack | None) -> str:
@@ -131,11 +190,7 @@ def _catalog_status(entry: CatalogEntry, pack: ModPack | None) -> str:
         return "Unavailable"
     if pack is None:
         return "Custom" if entry.custom else "Available"
-    pinned = None
-    for guid in entry.guids:
-        pinned = pack.find_mod(guid)
-        if pinned:
-            break
+    pinned = _pinned_for_entry(entry, pack)
     if pinned is None:
         return "Custom" if entry.custom else "Available"
     if entry.latest_raw and is_newer(entry.latest_raw, pinned.version):

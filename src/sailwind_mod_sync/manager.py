@@ -19,7 +19,6 @@ from sailwind_mod_sync.catalog.github import (
     fetch_release,
     list_releases,
     parse_repo_url,
-    pick_release_asset,
     release_version,
 )
 from sailwind_mod_sync.catalog.mvc import find_entry, load_cached_catalog, load_mvc_entries, refresh_catalog
@@ -42,6 +41,7 @@ from sailwind_mod_sync.models import (
     ModPack,
     PinnedMod,
     RemoteModInfo,
+    catalog_mod_name,
     display_mod_name,
     parse_mod_version,
     version_key,
@@ -197,41 +197,86 @@ class Manager:
             save_custom_catalog(self.paths, custom)
         return latest
 
-    def add_catalog_repo(self, repo_url: str, progress: ProgressFn | None = None) -> CatalogEntry:
+    def add_catalog_repo(self, repo_url: str, progress: ProgressFn | None = None) -> list[CatalogEntry]:
         repo = canonicalize_repo_url(repo_url)
-        existing = next((entry for entry in self.catalog if same_repo(entry.repo, repo)), None)
-        if existing is not None and not existing.custom:
-            raise ValueError(f"{repo} is already listed by ModVersionChecker")
         ref = parse_repo_url(repo)
         if progress:
             progress(f"Checking {ref.full_path}…")
         release = fetch_release(self.http, repo, tag=None, paths=self.paths, progress=progress)
-        asset = pick_release_asset(release.assets, guid="", repo_name=ref.repo)
         version_raw = release.tag or release_version(release)
         version = parse_mod_version(version_raw)
+        assets = [
+            asset
+            for asset in release.assets
+            if asset.name
+            and asset.download_url
+            and asset.name.lower().endswith((".zip", ".dll"))
+            and "source" not in asset.name.lower()
+        ]
+        if not assets:
+            names = ", ".join(asset.name for asset in release.assets if asset.name) or "none"
+            raise FileNotFoundError(
+                f"Release has no zip or dll download (files: {names}). "
+                "This GitHub release only has source code, or no files at all."
+            )
+        discovered = []
         with tempfile.TemporaryDirectory(prefix="sms-catalog-") as tmp:
-            dest = Path(tmp) / (asset.name or "artifact.zip")
-            if progress:
-                progress(f"Reading {asset.name}…")
-            self.http.download(asset.download_url, dest, progress=progress)
-            discovered = discover_local_file(dest, catalog=self.catalog)
-        guids = _guids_from_discovered(discovered, ref)
-        entry = CatalogEntry(
-            repo=repo,
-            guids=guids,
-            primary_guid=guids[0],
-            name=repo.rstrip("/").split("/")[-1],
-            latest_raw=version_raw,
-            latest_version=version,
-            available=bool(version),
-            custom=True,
-        )
-        custom = upsert_custom_entry(load_custom_catalog(self.paths), entry)
+            for index, asset in enumerate(assets):
+                dest = Path(tmp) / (asset.name or f"artifact-{index}")
+                if progress:
+                    progress(f"Reading {asset.name}…")
+                self.http.download(asset.download_url, dest, progress=progress)
+                discovered.extend(discover_local_file(dest, catalog=self.catalog))
+        custom = load_custom_catalog(self.paths)
+        added: list[CatalogEntry] = []
+        seen: set[str] = set()
+        for unit in discovered:
+            guid = (getattr(unit, "guid", None) or "").strip()
+            if not guid or guid in seen:
+                continue
+            existing = find_entry(self.catalog, guid)
+            if existing is not None and not existing.custom:
+                continue
+            seen.add(guid)
+            folder = (getattr(unit, "name", None) or "").strip()
+            entry = CatalogEntry(
+                repo=repo,
+                guids=[guid],
+                primary_guid=guid,
+                name=folder or catalog_mod_name(guid),
+                latest_raw=version_raw,
+                latest_version=version,
+                available=bool(version),
+                custom=True,
+                plugin_folders=[folder] if folder else [],
+            )
+            custom = upsert_custom_entry(custom, entry)
+            added.append(entry)
+        if not added and not discovered:
+            fallback = _guids_from_discovered([], ref)
+            guid = fallback[0]
+            entry = CatalogEntry(
+                repo=repo,
+                guids=fallback,
+                primary_guid=guid,
+                name=ref.repo,
+                latest_raw=version_raw,
+                latest_version=version,
+                available=bool(version),
+                custom=True,
+            )
+            custom = upsert_custom_entry(custom, entry)
+            added.append(entry)
+        if not added:
+            raise ValueError(f"All plugins from {repo} are already in the catalog")
         save_custom_catalog(self.paths, custom)
         self.catalog = merge_with_custom(load_mvc_entries(self.paths), custom)
-        found = find_entry(self.catalog, entry.primary_guid)
-        log.info("Added catalog repo %s guid=%s version=%s", repo, entry.primary_guid, version_raw)
-        return found or entry
+        resolved: list[CatalogEntry] = []
+        for entry in added:
+            found = find_entry(self.catalog, entry.primary_guid)
+            resolved.append(found or entry)
+        log.info("Added %s catalog plugin(s) from %s", len(resolved), repo)
+        return resolved
 
     def remove_catalog_repo(self, guid: str) -> None:
         custom = remove_custom_entry(load_custom_catalog(self.paths), guid)
@@ -331,6 +376,40 @@ class Manager:
             pack_pins=pack_pins,
         )
 
+    def catalog_mod_details(self, guid: str) -> ModDetails:
+        catalog = find_entry(self.catalog, guid)
+        if catalog is None:
+            raise FileNotFoundError(f"{guid} is not in the catalog")
+        guids = set(catalog.guids) | {catalog.primary_guid, guid}
+        matches = [item for item in self.library.list_mods() if item.guid in guids]
+        if matches:
+            newest = max(matches, key=lambda item: version_key(item.version))
+            return self.local_mod_details(newest.guid, newest.version)
+        pack_pins: list[tuple[str, str]] = []
+        for pack in self.packs.list_packs():
+            pinned = None
+            for candidate in catalog.guids:
+                pinned = pack.find_mod(candidate)
+                if pinned is not None:
+                    break
+            if pinned:
+                pack_pins.append((pack.name, pinned.version))
+        return ModDetails(
+            guid=catalog.primary_guid,
+            version=catalog.latest_version or catalog.latest_raw or "",
+            name=self.mod_display_name(catalog.primary_guid, repo=catalog.repo),
+            repo=catalog.repo,
+            source_url="",
+            filename="",
+            sha256="",
+            downloaded_at="",
+            plugin_folders=[],
+            size_bytes=0,
+            installed_versions=[],
+            catalog_latest=catalog.latest_raw,
+            pack_pins=pack_pins,
+        )
+
     def fetch_remote_mod_info(self, repo: str, progress: ProgressFn | None = None) -> RemoteModInfo:
         info = RemoteModInfo()
         try:
@@ -368,6 +447,7 @@ class Manager:
             version = parse_mod_version(version_raw)
         if progress:
             progress(f"Fetching {guid} from {repo}…")
+        folders = list(entry.plugin_folders) if entry and entry.plugin_folders else None
         meta = ensure_mod_artifact(
             self.library,
             self.http,
@@ -375,6 +455,7 @@ class Manager:
             repo=repo,
             version=version,
             version_raw=version_raw,
+            plugin_folders=folders,
             progress=progress,
         )
         return self.add_library_mod_to_pack(
@@ -484,6 +565,64 @@ class Manager:
             meta.repo = page
             self.library.write_mod_meta(meta)
         return page
+
+    def associate_mod(
+        self,
+        guid: str,
+        version: str,
+        *,
+        catalog_entry: CatalogEntry | None = None,
+        repo: str = "",
+    ) -> str:
+        entry = catalog_entry
+        page = ""
+        if entry is None and repo:
+            page = canonicalize_repo_url(repo)
+            entry = next((item for item in self.catalog if same_repo(item.repo, page)), None)
+            if entry is None:
+                return self.set_mod_repo(guid, page)
+        if entry is None:
+            raise ValueError("No catalog entry or repository to associate")
+        page = canonicalize_repo_url(entry.repo)
+        new_guid = guid if guid in entry.guids or guid == entry.primary_guid else entry.primary_guid
+        if self.library.has_mod(guid, version):
+            self.library.rekey_mod(guid, version, new_guid, repo=page)
+        elif self.library.has_mod(new_guid, version):
+            meta = self.library.read_mod_meta(new_guid, version)
+            if meta is not None:
+                meta.repo = page
+                self.library.write_mod_meta(meta)
+        else:
+            self.set_mod_repo(guid, page)
+        if new_guid != guid and guid in self.aliases:
+            self.aliases[new_guid] = self.aliases.pop(guid)
+            save_aliases(self.paths, self.aliases)
+        for pack in self.packs.list_packs():
+            pinned = pack.find_mod(guid)
+            if pinned is None:
+                continue
+            if new_guid == guid:
+                pinned.repo = page
+                self.packs.save(pack)
+                continue
+            existing = pack.find_mod(new_guid)
+            remaining = [mod for mod in pack.mods if mod.guid != guid]
+            pinned.guid = new_guid
+            pinned.repo = page
+            if existing is None:
+                remaining.append(pinned)
+            else:
+                remaining = [mod for mod in remaining if mod.guid != new_guid]
+                existing.version = pinned.version
+                existing.version_raw = pinned.version_raw or existing.version_raw
+                existing.repo = page
+                existing.enabled = pinned.enabled
+                existing.plugin_folders = list(pinned.plugin_folders or existing.plugin_folders)
+                remaining.append(existing)
+            remaining.sort(key=lambda mod: mod.guid.lower())
+            pack.mods = remaining
+            self.packs.save(pack)
+        return new_guid
 
     def missing_mods(self, pack: ModPack | None) -> list[PinnedMod]:
         if pack is None:

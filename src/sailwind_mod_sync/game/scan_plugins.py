@@ -29,6 +29,10 @@ SKIP_GUID_PREFIXES = (
     "newtonsoft.",
     "assembly-csharp",
 )
+AUTO_MATCH_SCORE = 60
+AUTO_MATCH_EXACT = 80
+AUTO_MATCH_MARGIN = 15
+SUGGEST_SCORE = 12
 
 
 @dataclass
@@ -140,7 +144,7 @@ def _from_unit(
     guid = _pick_guid(name, search_dlls, candidates, catalog, log_guids)
     if not guid:
         guid = f"local.{_norm(name)}"
-    entry = find_entry(catalog, guid)
+    guid, entry = apply_catalog_identity(name, guid, catalog)
     version = (
         _match_log_version(name, guid, log_versions)
         or (entry.latest_version if entry else None)
@@ -170,8 +174,11 @@ def _pick_guid(
     if log_guid:
         return log_guid
     if not candidates:
-        entry = _match_catalog_name(name, catalog)
-        return entry.primary_guid if entry else ""
+        ranked = rank_catalog_matches(name, "", catalog)
+        if ranked and ranked[0][0] >= AUTO_MATCH_EXACT:
+            if len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= AUTO_MATCH_MARGIN:
+                return ranked[0][1].primary_guid
+        return ""
 
     def score(guid: str) -> int:
         guid_key = _norm(guid)
@@ -219,14 +226,84 @@ def _match_log_version(name: str, guid: str, log_versions: dict[str, str]) -> st
     return None
 
 
-def _match_catalog_name(name: str, catalog: list[CatalogEntry]) -> CatalogEntry | None:
-    key = _norm(name)
+def apply_catalog_identity(
+    name: str,
+    guid: str,
+    catalog: list[CatalogEntry],
+) -> tuple[str, CatalogEntry | None]:
+    entry = find_entry(catalog, guid)
+    if entry is not None:
+        return guid, entry
+    ranked = rank_catalog_matches(name, guid, catalog)
+    if not ranked:
+        return guid, None
+    score, matched = ranked[0]
+    second = ranked[1][0] if len(ranked) > 1 else 0
+    if second and score - second < AUTO_MATCH_MARGIN:
+        return guid, None
+    local = guid.lower().startswith("local.")
+    if score >= AUTO_MATCH_EXACT or (local and score >= AUTO_MATCH_SCORE):
+        chosen = guid if guid in matched.guids else matched.primary_guid
+        return chosen, matched
+    return guid, None
+
+
+def rank_catalog_matches(
+    name: str,
+    guid: str,
+    catalog: list[CatalogEntry],
+    extra_names: list[str] | None = None,
+) -> list[tuple[int, CatalogEntry]]:
+    scored: list[tuple[int, CatalogEntry]] = []
     for entry in catalog:
-        if key == _norm(entry.name) or key == _norm(entry.primary_guid.split(".")[-1]):
-            return entry
-        if any(key == _norm(guid.split(".")[-1]) for guid in entry.guids):
-            return entry
-    return None
+        points = _catalog_match_score(name, guid, entry, extra_names)
+        if points >= SUGGEST_SCORE:
+            scored.append((points, entry))
+    scored.sort(key=lambda item: (-item[0], item[1].name.lower()))
+    return scored
+
+
+def _catalog_match_score(
+    name: str,
+    guid: str,
+    entry: CatalogEntry,
+    extra_names: list[str] | None,
+) -> int:
+    if guid in entry.guids or guid == entry.primary_guid:
+        return 100
+    labels = [name, *(extra_names or [])]
+    repo_key = _norm(entry.name)
+    repo_slug = _norm(entry.repo.rstrip("/").split("/")[-1])
+    tails = [_norm(item.split(".")[-1]) for item in entry.guids]
+    tails.append(_norm(entry.primary_guid.split(".")[-1]))
+    catalog_tokens = _tokens(entry.name) | _tokens(repo_slug)
+    for item in entry.guids:
+        catalog_tokens |= _tokens(item.split(".")[-1])
+    guid_tail = _norm(guid.split(".")[-1]) if guid else ""
+    points = 0
+    if guid_tail and len(guid_tail) >= 4 and guid_tail in tails:
+        points = max(points, 70)
+    for raw in labels:
+        key = _norm(raw)
+        if not key:
+            continue
+        if key == repo_key or key == repo_slug:
+            points = max(points, 85)
+        if key in tails:
+            points = max(points, 80)
+        for tail in tails:
+            if len(tail) >= 4 and tail != key and (tail in key or key in tail):
+                points = max(points, 45)
+        name_tokens = _tokens(raw)
+        overlap = name_tokens & catalog_tokens
+        if overlap:
+            token_score = len(overlap) * 12
+            if name_tokens and name_tokens <= catalog_tokens:
+                token_score += 20
+            if len(name_tokens) >= 2 and name_tokens <= catalog_tokens:
+                token_score = max(token_score, 75)
+            points = max(points, token_score)
+    return points
 
 
 def _skip_dll(path: Path) -> bool:

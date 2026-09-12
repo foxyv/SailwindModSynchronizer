@@ -164,11 +164,16 @@ def test_backup_commands_are_under_backup_menu(paths: AppPaths) -> None:
             for action in window.menuBar().actions()
             if action.menu() and action.menu().title().replace("&", "") == "Backup"
         )
-        items = [action.text().replace("&", "") for action in backup_menu.actions()]
-        assert items == ["Backup BepInEx", "Restore BepInEx"]
+        items = [
+            action.text().replace("&", "")
+            for action in backup_menu.actions()
+            if not action.isSeparator()
+        ]
+        assert items == ["Backup BepInEx", "Restore BepInEx", "Import game plugins"]
         top_level = [action.text().replace("&", "") for action in window.menuBar().actions()]
         assert "Backup BepInEx" not in top_level
         assert "Restore BepInEx" not in top_level
+        assert "Import game plugins" not in top_level
     finally:
         window.close()
         window.deleteLater()

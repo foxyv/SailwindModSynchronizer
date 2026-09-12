@@ -79,6 +79,7 @@ class LibraryStore:
         repo: str,
         source_url: str,
         filename: str | None = None,
+        keep_folders: list[str] | None = None,
     ) -> ArtifactMeta:
         directory = self.mod_dir(guid, version)
         directory.mkdir(parents=True, exist_ok=True)
@@ -89,7 +90,7 @@ class LibraryStore:
         digest = sha256_file(stored)
         (directory / "sha256").write_text(digest + "\n", encoding="utf-8")
         extracted = self.mod_extracted(guid, version)
-        folders = normalize_plugin_archive(stored, extracted)
+        folders = normalize_plugin_archive(stored, extracted, keep_folders=keep_folders)
         meta = ArtifactMeta(
             guid=guid,
             version=version,
@@ -192,6 +193,42 @@ class LibraryStore:
                     )
                 )
         return entries
+
+    def rekey_mod(self, old_guid: str, old_version: str, new_guid: str, *, repo: str = "") -> ArtifactMeta:
+        if old_guid == new_guid:
+            meta = self.read_mod_meta(old_guid, old_version)
+            if meta is None:
+                raise FileNotFoundError(self.mod_dir(old_guid, old_version))
+            if repo:
+                meta.repo = repo
+            self.write_mod_meta(meta)
+            return meta
+        dest_meta = self.read_mod_meta(new_guid, old_version)
+        if dest_meta is not None:
+            dest_meta.repo = repo or dest_meta.repo
+            dest_meta.guid = new_guid
+            self.write_mod_meta(dest_meta)
+            self.delete_mod(old_guid, old_version)
+            return dest_meta
+        src = self.mod_dir(old_guid, old_version)
+        dest = self.mod_dir(new_guid, old_version)
+        if not src.exists():
+            raise FileNotFoundError(src)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.move(str(src), str(dest))
+        guid_dir = src.parent
+        if guid_dir.exists() and not any(guid_dir.iterdir()):
+            guid_dir.rmdir()
+        meta = self.read_mod_meta(new_guid, old_version)
+        if meta is None:
+            raise FileNotFoundError(dest)
+        meta.guid = new_guid
+        if repo:
+            meta.repo = repo
+        self.write_mod_meta(meta)
+        return meta
 
     def delete_mod(self, guid: str, version: str) -> None:
         directory = self.mod_dir(guid, version)

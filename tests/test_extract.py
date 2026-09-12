@@ -30,6 +30,21 @@ def test_normalize_named_plugin_folder(tmp_path: Path) -> None:
     assert (dest / "Dizzy.Gamma" / "Dizzy.Gamma.dll").exists()
 
 
+def test_normalize_keeps_only_requested_plugin_folder(tmp_path: Path) -> None:
+    archive = _write_zip(
+        tmp_path / "seas.zip",
+        {
+            "Shattered Seas Small/Small.dll": _dll_bytes(),
+            "Shattered Seas Large/Large.dll": _dll_bytes(),
+        },
+    )
+    dest = tmp_path / "out"
+    folders = normalize_plugin_archive(archive, dest, keep_folders=["Shattered Seas Small"])
+    assert folders == ["Shattered Seas Small"]
+    assert (dest / "Shattered Seas Small" / "Small.dll").exists()
+    assert not (dest / "Shattered Seas Large").exists()
+
+
 def test_normalize_version_wrapper_folder(tmp_path: Path) -> None:
     archive = _write_zip(
         tmp_path / "mvc.zip",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QLabel, QPushButton, QTableWidget
 
 from sailwind_mod_sync.config import AppConfig
@@ -10,7 +11,8 @@ from sailwind_mod_sync.paths import AppPaths
 from sailwind_mod_sync.updater import AppUpdate
 from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
 from sailwind_mod_sync.ui.update_dialog import OPEN, SKIP, UPDATE, UpdateDialog
-from sailwind_mod_sync.ui.catalog_view import CatalogView, catalog_library_button
+from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, AssociateTarget
+from sailwind_mod_sync.ui.catalog_view import CatalogView, catalog_pack_button
 from sailwind_mod_sync.ui.library_view import LibraryView
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
 from sailwind_mod_sync.ui.links import repo_button
@@ -107,21 +109,62 @@ def _catalog_entry(guid: str = "com.example.mod", latest: str = "1.2.0") -> Cata
     )
 
 
-def test_catalog_library_button_labels() -> None:
+def test_catalog_pack_button_labels() -> None:
     entry = _catalog_entry()
-    assert catalog_library_button(entry, {})[0] == "Add to library"
-    assert catalog_library_button(entry, {entry.primary_guid: {"1.2.0"}})[0] == "In library"
-    assert catalog_library_button(entry, {entry.primary_guid: {"1.0.0"}})[0] == "Update"
+    assert catalog_pack_button(entry, None)[0] == "Add to pack"
+    pack = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[PinnedMod(guid=entry.primary_guid, version="1.2.0")],
+    )
+    assert catalog_pack_button(entry, pack)[0] == "In pack"
+    outdated = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[PinnedMod(guid=entry.primary_guid, version="1.0.0")],
+    )
+    assert catalog_pack_button(entry, outdated)[0] == "Update"
 
 
-def test_catalog_view_shows_in_library_button() -> None:
+def test_catalog_view_shows_add_to_pack_button() -> None:
     app = QApplication.instance() or QApplication([])
     view = CatalogView()
+    pack = ModPack(id="crew", name="Crew", mods=[])
+
+    def action_labels() -> list[str]:
+        labels: list[str] = []
+        for row in range(view.table.rowCount()):
+            widget = view.table.cellWidget(row, 4)
+            if widget is None:
+                continue
+            labels.extend(button.text() for button in widget.findChildren(QPushButton))
+        return labels
+
     try:
-        view.set_data([_catalog_entry()], None, {"com.example.mod": {"1.2.0"}})
-        labels = [button.text() for button in view.findChildren(QPushButton)]
-        assert "In library" in labels
+        view.set_data([_catalog_entry()], pack)
+        labels = action_labels()
+        assert "Add to pack" in labels
         assert "Add to library" not in labels
+        assert "In library" not in labels
+        packed = ModPack(
+            id="crew",
+            name="Crew",
+            mods=[PinnedMod(guid="com.example.mod", version="1.2.0")],
+        )
+        view.set_data([_catalog_entry()], packed)
+        labels = action_labels()
+        assert "In pack" in labels
+        assert "Add to pack" not in labels
+        caught: list[str] = []
+        view.install_requested.connect(caught.append)
+        add_buttons = [
+            button
+            for button in view.table.cellWidget(0, 4).findChildren(QPushButton)
+            if button.text() == "In pack"
+        ]
+        assert add_buttons
+        add_buttons[0].click()
+        assert caught == ["com.example.mod"]
     finally:
         view.deleteLater()
     app.processEvents()
@@ -156,6 +199,91 @@ def test_library_double_click_requests_details() -> None:
         assert view.table.item(0, 0).text() == "mod"
         assert view.table.horizontalHeaderItem(0).text() == "Name"
         assert "Rename" in [button.text() for button in view.findChildren(QPushButton)]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_library_context_menu_finds_in_catalog() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = LibraryView()
+    caught: list[str] = []
+    view.find_in_catalog_requested.connect(caught.append)
+    entry = LibraryEntry(
+        guid="com.example.mod",
+        version="1.2.0",
+        path=Path("."),
+        zip_path=Path("."),
+        extracted_dir=Path("."),
+        meta=ArtifactMeta(
+            guid="com.example.mod",
+            version="1.2.0",
+            version_raw="v1.2.0",
+            repo="https://github.com/example/mod",
+            source_url="https://example/mod.zip",
+            sha256="abc",
+            filename="mod.zip",
+        ),
+        size_bytes=12,
+    )
+    try:
+        view.set_entries([entry])
+        assert view.table.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+        assert view._context_menu_for_row(-1) is None
+        menu = view._context_menu_for_row(0)
+        assert menu is not None
+        labels = [action.text() for action in menu.actions()]
+        assert labels == ["Find in Catalog"]
+        menu.actions()[0].trigger()
+        assert caught == ["com.example.mod"]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_catalog_reveal_mod_selects_matching_row() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    try:
+        view.set_data(
+            [
+                _catalog_entry("com.example.zebra", "1.0.0"),
+                CatalogEntry(
+                    repo="https://github.com/example/apple",
+                    guids=["com.example.apple"],
+                    primary_guid="com.example.apple",
+                    name="apple",
+                    latest_raw="v2.0.0",
+                    latest_version="2.0.0",
+                    available=True,
+                ),
+            ],
+            None,
+        )
+        view._filter.setText("zebra")
+        assert view.table.rowCount() == 1
+        assert view.reveal_mod("com.example.apple")
+        assert view._filter.text() == ""
+        selected = [
+            view.table.item(index.row(), 1).text()
+            for index in view.table.selectionModel().selectedRows()
+        ]
+        assert selected == ["com.example.apple"]
+        assert not view.reveal_mod("com.missing.mod")
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_catalog_double_click_requests_details() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    caught: list[str] = []
+    view.details_requested.connect(caught.append)
+    try:
+        view.set_data([_catalog_entry("com.example.mod", "1.2.0")], None)
+        view._on_double_click(0, 0)
+        assert caught == ["com.example.mod"]
     finally:
         view.deleteLater()
     app.processEvents()
@@ -281,7 +409,7 @@ def test_select_version_dialog_lists_library_and_remote() -> None:
     try:
         labels = [dialog.list.item(index).text() for index in range(dialog.list.count())]
         assert any("v1.0.0" in label and "current" in label for label in labels)
-        assert any("v0.9.0" in label and "in library" in label for label in labels)
+        assert any("v0.9.0" in label and "downloaded" in label for label in labels)
         dialog._on_remote([("1.2.0", "v1.2.0")])
         labels = [dialog.list.item(index).text() for index in range(dialog.list.count())]
         assert any("v1.2.0" in label and "download" in label for label in labels)
@@ -291,6 +419,24 @@ def test_select_version_dialog_lists_library_and_remote() -> None:
         assert selected is not None
         assert selected[0] == "1.2.0"
         assert selected[1] == "v1.2.0"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_select_version_dialog_add_hint() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = SelectVersionDialog(
+        guid="com.example.mod",
+        name="Example",
+        current_version="1.2.0",
+        adding=True,
+    )
+    try:
+        labels = " ".join(label.text() for label in dialog.findChildren(QLabel))
+        assert "add to the pack" in labels
+        assert "downloads automatically" in labels
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -379,6 +525,23 @@ def test_settings_has_update_checkbox(paths: AppPaths) -> None:
     app.processEvents()
 
 
+def test_settings_has_create_github_token_button(paths: AppPaths) -> None:
+    from sailwind_mod_sync.constants import GITHUB_NEW_TOKEN_URL
+
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(AppConfig(), paths)
+    try:
+        assert dialog.create_token.isEnabled()
+        assert dialog.create_token.text() == "Create…"
+        assert "personal access token" in dialog.create_token.toolTip().lower()
+        assert "tokens/new" in GITHUB_NEW_TOKEN_URL
+        assert "github.com" in GITHUB_NEW_TOKEN_URL
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
 def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
     from sailwind_mod_sync.http_util import HttpClient
     from sailwind_mod_sync.manager import Manager
@@ -417,9 +580,233 @@ def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
         assert "Check for updates…" in items
         assert "About" in items
         assert window.windowTitle().startswith("Sailwind Mod Synchronizer")
+        assert [window.tabs.tabText(index) for index in range(window.tabs.count())] == [
+            "Pack",
+            "Catalog",
+        ]
+        downloads_menu = next(
+            action.menu()
+            for action in window.menuBar().actions()
+            if action.menu() and action.menu().title().replace("&", "") == "Download Management"
+        )
+        download_items = [action.text().replace("&", "") for action in downloads_menu.actions()]
+        assert "Manage downloads…" in download_items
+        assert "Import mod file…" in download_items
+        assert window._downloads.windowTitle() == "Download Management"
+        assert not window._downloads.isVisible()
+        window._open_downloads()
+        assert window._downloads.isVisible()
+        window._downloads.hide()
     finally:
         window.close()
         window.deleteLater()
         manager.close()
+    app.processEvents()
+
+
+def test_duplicate_pack_appears_and_is_selected(paths: AppPaths, monkeypatch) -> None:
+    from sailwind_mod_sync.http_util import HttpClient
+    from sailwind_mod_sync.manager import Manager
+    from sailwind_mod_sync.ui.main_window import MainWindow
+
+    class _NoHttp(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def close(self) -> None:
+            return None
+
+    app = QApplication.instance() or QApplication([])
+    manager = Manager(paths=paths, config=AppConfig(check_for_updates=False), http=_NoHttp())
+    manager.catalog = [_catalog_entry()]
+    window = MainWindow(manager)
+    try:
+        assert window.pack_list.count() >= 1
+        source = window.pack_list.currentItem().text()
+        monkeypatch.setattr(
+            "sailwind_mod_sync.ui.main_window.QInputDialog.getText",
+            lambda *_args, **_kwargs: (f"{source} copy", True),
+        )
+        window._duplicate_pack()
+        names = [window.pack_list.item(index).text() for index in range(window.pack_list.count())]
+        assert f"{source} copy" in names
+        assert window.pack_list.currentItem().text() == f"{source} copy"
+    finally:
+        window.close()
+        window.deleteLater()
+        manager.close()
+    app.processEvents()
+
+
+def test_pack_view_shows_associate_when_repo_missing() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = PackView()
+    pack = ModPack(
+        id="game",
+        name="Game",
+        mods=[PinnedMod(guid="local.stickyfix", version="1.2.0", repo="")],
+    )
+    try:
+        view.set_pack(pack, [])
+        labels = [button.text() for button in view.findChildren(QPushButton)]
+        assert "Associate" in labels
+        assert "GitHub" not in labels
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_associate_dialog_records_catalog_choice() -> None:
+    app = QApplication.instance() or QApplication([])
+    entry = CatalogEntry(
+        repo="https://github.com/NANDbrew/StickyFix",
+        guids=["com.nandbrew.stickyfix"],
+        primary_guid="com.nandbrew.stickyfix",
+        name="StickyFix",
+        latest_raw="v1.3.0",
+        latest_version="1.3.0",
+        available=True,
+    )
+    dialog = AssociateCatalogDialog(
+        [AssociateTarget(guid="local.stickyfix", version="1.2.0", name="StickyFix")],
+        [entry],
+    )
+    try:
+        assert dialog.catalog_list.count() == 1
+        dialog.associate_btn.click()
+        choices = dialog.choices()
+        assert len(choices) == 1
+        assert choices[0].guid == "local.stickyfix"
+        assert choices[0].entry is not None
+        assert choices[0].entry.primary_guid == "com.nandbrew.stickyfix"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def _library_entry(guid: str, version: str, size: int, name: str | None = None) -> LibraryEntry:
+    return LibraryEntry(
+        guid=guid,
+        version=version,
+        path=Path("."),
+        zip_path=Path("."),
+        extracted_dir=Path("."),
+        meta=ArtifactMeta(
+            guid=guid,
+            version=version,
+            version_raw=version,
+            repo=f"https://github.com/example/{guid.split('.')[-1]}",
+            source_url="",
+            sha256="abc",
+            filename="mod.zip",
+            plugin_folders=[name] if name else [],
+        ),
+        size_bytes=size,
+    )
+
+
+def test_catalog_header_click_sorts_rows() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    try:
+        view.set_data(
+            [
+                _catalog_entry("com.example.zebra", "1.0.0"),
+                CatalogEntry(
+                    repo="https://github.com/example/apple",
+                    guids=["com.example.apple"],
+                    primary_guid="com.example.apple",
+                    name="apple",
+                    latest_raw="v2.0.0",
+                    latest_version="2.0.0",
+                    available=True,
+                ),
+            ],
+            None,
+        )
+        assert view.table.isSortingEnabled()
+        assert view.table.horizontalHeader().isSortIndicatorShown()
+        assert view.table.horizontalHeader().sectionsClickable()
+        names = [view.table.item(row, 0).text() for row in range(view.table.rowCount())]
+        assert names == ["apple", "mod"]
+        view.table.sortItems(0, Qt.SortOrder.DescendingOrder)
+        names = [view.table.item(row, 0).text() for row in range(view.table.rowCount())]
+        assert names == ["mod", "apple"]
+        view.table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        latests = [view.table.item(row, 2).text() for row in range(view.table.rowCount())]
+        assert latests[0].startswith("v2.0.0")
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_library_header_sorts_by_size_and_keeps_double_click() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = LibraryView()
+    caught: list[tuple[str, str]] = []
+    view.details_requested.connect(lambda guid, version: caught.append((guid, version)))
+    try:
+        view.set_entries(
+            [
+                _library_entry("com.example.big", "1.0.0", 5000, "Big"),
+                _library_entry("com.example.small", "2.0.0", 50, "Small"),
+            ]
+        )
+        view.table.sortItems(3, Qt.SortOrder.AscendingOrder)
+        assert view.table.item(0, 1).text() == "com.example.small"
+        view._on_double_click(0, 0)
+        assert caught == [("com.example.small", "2.0.0")]
+        view.table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        assert view.table.item(0, 2).text() == "2.0.0"
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_pack_header_sorts_by_mod_name() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = PackView()
+    pack = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[
+            PinnedMod(guid="com.example.zebra", version="1.0.0", repo="https://github.com/example/zebra"),
+            PinnedMod(guid="com.example.apple", version="2.0.0", repo="https://github.com/example/apple"),
+        ],
+    )
+    catalog = [
+        CatalogEntry(
+            repo="https://github.com/example/zebra",
+            guids=["com.example.zebra"],
+            primary_guid="com.example.zebra",
+            name="Zebra",
+            latest_raw="v1.0.0",
+            latest_version="1.0.0",
+            available=True,
+        ),
+        CatalogEntry(
+            repo="https://github.com/example/apple",
+            guids=["com.example.apple"],
+            primary_guid="com.example.apple",
+            name="Apple",
+            latest_raw="v2.0.0",
+            latest_version="2.0.0",
+            available=True,
+        ),
+    ]
+    try:
+        view.set_pack(pack, catalog)
+        assert view.table.isSortingEnabled()
+        assert view.table.item(0, 1).text() == "Zebra"
+        view.table.sortItems(1, Qt.SortOrder.AscendingOrder)
+        assert view.table.item(0, 1).text() == "Apple"
+        assert view.table.item(1, 1).text() == "Zebra"
+        view.table.sortItems(2, Qt.SortOrder.AscendingOrder)
+        assert view.table.item(0, 2).text() == "com.example.apple"
+    finally:
+        view.deleteLater()
     app.processEvents()
 

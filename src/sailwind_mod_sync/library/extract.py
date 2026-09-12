@@ -15,7 +15,11 @@ class ExtractError(ValueError):
     pass
 
 
-def normalize_plugin_archive(archive: Path, dest: Path) -> list[str]:
+def normalize_plugin_archive(
+    archive: Path,
+    dest: Path,
+    keep_folders: list[str] | None = None,
+) -> list[str]:
     """Extract a mod zip into dest as plugin folders ready for BepInEx/plugins."""
     dest.mkdir(parents=True, exist_ok=True)
     _clear_dir(dest)
@@ -31,7 +35,7 @@ def normalize_plugin_archive(archive: Path, dest: Path) -> list[str]:
             source = plugins
         folders = _copy_plugin_contents(source, dest)
         _copy_overlay_steam_api(overlay_root, dest, folders)
-        return folders
+        return _retain_folders(dest, folders, keep_folders)
 
 
 def extract_bepinex_pack(archive: Path, dest: Path) -> Path:
@@ -194,6 +198,23 @@ def _copy_tree(src: Path, dest: Path) -> None:
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest)
+
+
+def _retain_folders(dest: Path, folders: list[str], keep_folders: list[str] | None) -> list[str]:
+    wanted = {name.strip().lower() for name in (keep_folders or []) if name and name.strip()}
+    if not wanted:
+        return folders
+    kept = [name for name in folders if name.lower() in wanted]
+    if not kept:
+        return folders
+    for child in list(dest.iterdir()):
+        if child.name.lower() in wanted:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+    return kept
 
 
 def _visible_children(path: Path) -> list[Path]:

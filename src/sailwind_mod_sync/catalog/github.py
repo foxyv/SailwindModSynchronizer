@@ -124,7 +124,12 @@ def pick_zip_asset(assets: list[ReleaseAsset], guid: str, repo_name: str) -> Rel
     return pick_release_asset(assets, guid, repo_name)
 
 
-def pick_release_asset(assets: list[ReleaseAsset], guid: str, repo_name: str) -> ReleaseAsset:
+def pick_release_asset(
+    assets: list[ReleaseAsset],
+    guid: str,
+    repo_name: str,
+    extra_hints: list[str] | tuple[str, ...] = (),
+) -> ReleaseAsset:
     usable = [
         asset
         for asset in assets
@@ -138,6 +143,7 @@ def pick_release_asset(assets: list[ReleaseAsset], guid: str, repo_name: str) ->
         )
     guid_tail = guid.split(".")[-1].lower()
     repo_l = repo_name.lower()
+    hints = [hint.lower() for hint in extra_hints if hint]
 
     def score(asset: ReleaseAsset) -> int:
         name = asset.name.lower()
@@ -148,6 +154,13 @@ def pick_release_asset(assets: list[ReleaseAsset], guid: str, repo_name: str) ->
             points += 10
         if repo_l and repo_l in name:
             points += 5
+        for hint in hints:
+            compact = re.sub(r"[^a-z0-9]+", "", hint)
+            compact_name = re.sub(r"[^a-z0-9]+", "", name)
+            if hint and hint in name:
+                points += 12
+            elif compact and compact in compact_name:
+                points += 12
         if "source" in name:
             points -= 20
         if name.endswith("-sources.zip") or name.endswith("_source.zip"):

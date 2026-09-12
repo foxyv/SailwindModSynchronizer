@@ -1,7 +1,8 @@
 #Requires -Version 5.1
 param(
     [switch]$SkipShortcut,
-    [switch]$Console
+    [switch]$Console,
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +15,7 @@ if (-not (Test-Path $python)) {
 }
 
 $buildArgs = @("scripts\build.py")
+if ($Release) { $buildArgs += "--release" }
 if ($SkipShortcut) { $buildArgs += "--skip-shortcut" }
 if ($Console) { $buildArgs += "--console" }
 

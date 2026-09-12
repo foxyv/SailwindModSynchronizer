@@ -10,6 +10,7 @@ from sailwind_mod_sync.catalog.github import (
 from sailwind_mod_sync.catalog.mvc import merge_catalog
 from sailwind_mod_sync.http_util import HttpError
 from sailwind_mod_sync.models import ReleaseAsset
+from sailwind_mod_sync.paths import AppPaths
 
 
 def test_merge_dedupes_duplicate_guids() -> None:
@@ -33,6 +34,25 @@ def test_merge_dedupes_duplicate_guids() -> None:
     sticky = by_name["StickyFix"]
     assert not sticky.available
     assert sticky.latest_version is None
+
+
+def test_merge_splits_distinct_mods_in_one_repo() -> None:
+    entries = merge_catalog(
+        [
+            {"guid": "com.dizzy.sailwind.gamma", "repo": "https://github.com/foxyv/dizzy_sailwind_mods"},
+            {"guid": "com.dizzy.sailwind.calendar", "repo": "https://github.com/foxyv/dizzy_sailwind_mods"},
+        ],
+        [
+            {"guid": "com.dizzy.sailwind.gamma", "repo": "https://github.com/foxyv/dizzy_sailwind_mods", "version": "v0.3.3"},
+            {"guid": "com.dizzy.sailwind.calendar", "repo": "https://github.com/foxyv/dizzy_sailwind_mods", "version": "v0.2.0"},
+        ],
+    )
+    by_guid = {entry.primary_guid: entry for entry in entries}
+    assert set(by_guid) == {"com.dizzy.sailwind.gamma", "com.dizzy.sailwind.calendar"}
+    assert by_guid["com.dizzy.sailwind.gamma"].name == "Gamma"
+    assert by_guid["com.dizzy.sailwind.calendar"].name == "Calendar"
+    assert by_guid["com.dizzy.sailwind.gamma"].repo.endswith("dizzy_sailwind_mods")
+    assert by_guid["com.dizzy.sailwind.calendar"].latest_version == "0.2.0"
 
 
 def test_parse_github_and_gitlab_urls() -> None:
@@ -74,6 +94,20 @@ def test_pick_zip_prefers_matching_name() -> None:
     ]
     chosen = pick_zip_asset(assets, "com.dizzy.sailwind.gamma", "dizzy_sailwind_mods")
     assert chosen.name == "Dizzy.Gamma-0.3.3.zip"
+
+
+def test_pick_release_uses_plugin_folder_hint() -> None:
+    assets = [
+        ReleaseAsset("ShatteredSeasSmall.zip", "https://example/small.zip"),
+        ReleaseAsset("ShatteredSeasLarge.zip", "https://example/large.zip"),
+    ]
+    chosen = pick_release_asset(
+        assets,
+        "com.TheOriginOfAllEvil.riverSloop",
+        "Shattered-Seas-Expansion",
+        extra_hints=["Shattered Seas Small"],
+    )
+    assert chosen.name == "ShatteredSeasSmall.zip"
 
 
 def test_pick_release_accepts_dll_when_no_zip() -> None:
@@ -233,6 +267,60 @@ def test_merge_with_custom_skips_mvc_duplicate() -> None:
     assert len(sticky) == 1
     assert not sticky[0].custom
     assert sticky[0].latest_version == "1.0.0"
+
+
+def test_merge_with_custom_keeps_extra_mod_from_mvc_repo() -> None:
+    from sailwind_mod_sync.catalog.custom import merge_with_custom
+    from sailwind_mod_sync.models import CatalogEntry
+
+    mvc = merge_catalog(
+        [{"guid": "com.dizzy.sailwind.gamma", "repo": "https://github.com/foxyv/dizzy_sailwind_mods"}],
+        [{"guid": "com.dizzy.sailwind.gamma", "repo": "https://github.com/foxyv/dizzy_sailwind_mods", "version": "v0.3.3"}],
+    )
+    custom = [
+        CatalogEntry(
+            repo="https://github.com/foxyv/dizzy_sailwind_mods",
+            guids=["com.dizzy.sailwind.calendar"],
+            primary_guid="com.dizzy.sailwind.calendar",
+            name="Dizzy.Calendar",
+            latest_raw="v0.2.0",
+            latest_version="0.2.0",
+            available=True,
+            custom=True,
+            plugin_folders=["Dizzy.Calendar"],
+        )
+    ]
+    merged = merge_with_custom(mvc, custom)
+    guids = {entry.primary_guid: entry for entry in merged}
+    assert "com.dizzy.sailwind.gamma" in guids
+    assert guids["com.dizzy.sailwind.calendar"].custom
+    assert guids["com.dizzy.sailwind.calendar"].plugin_folders == ["Dizzy.Calendar"]
+
+
+def test_load_custom_catalog_splits_bundled_repo(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.custom import load_custom_catalog, save_custom_catalog
+    from sailwind_mod_sync.models import CatalogEntry
+
+    save_custom_catalog(
+        paths,
+        [
+            CatalogEntry(
+                repo="https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion",
+                guids=["com.TheOriginOfAllEvil.riverSloop", "com.TheOriginOfAllEvil.clipper"],
+                primary_guid="com.TheOriginOfAllEvil.riverSloop",
+                name="Shattered-Seas-Expansion",
+                latest_raw="b1.2.8",
+                latest_version="1.2.8",
+                available=True,
+                custom=True,
+            )
+        ],
+    )
+    loaded = load_custom_catalog(paths)
+    by_guid = {entry.primary_guid: entry for entry in loaded}
+    assert set(by_guid) == {"com.TheOriginOfAllEvil.riverSloop", "com.TheOriginOfAllEvil.clipper"}
+    assert by_guid["com.TheOriginOfAllEvil.riverSloop"].name == "River Sloop"
+    assert by_guid["com.TheOriginOfAllEvil.clipper"].name == "Clipper"
 
 
 class _ReadmeHttp:

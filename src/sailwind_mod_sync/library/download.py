@@ -22,15 +22,15 @@ def ensure_mod_artifact(
     repo: str,
     version: str | None = None,
     version_raw: str | None = None,
+    plugin_folders: list[str] | None = None,
     progress: ProgressFn | None = None,
 ) -> ArtifactMeta:
     repo = (repo or "").strip() or (known_repo_for(guid) or "")
     log.info("ensure_mod_artifact guid=%s version=%s repo=%s", guid, version, repo)
-    if version and _cached_artifact_usable(store, guid, version):
-        existing = store.read_mod_meta(guid, version)
-        if existing:
-            log.info("Using cached artifact %s %s", guid, version)
-            return existing
+    if version:
+        cached = _reuse_or_filter_cache(store, guid, version, repo, plugin_folders)
+        if cached is not None:
+            return cached
     if version and artifact_needs_refetch(store, guid, version):
         log.info("Cached %s %s is incomplete; re-fetching official zip", guid, version)
 
@@ -39,14 +39,13 @@ def ensure_mod_artifact(
     if not remote_version:
         raise RuntimeError(f"Could not parse version from {repo} tag {release.tag!r}")
 
-    if _cached_artifact_usable(store, guid, remote_version):
-        meta = store.read_mod_meta(guid, remote_version)
-        if meta:
-            log.info("Using cached artifact %s %s after release check", guid, remote_version)
-            return meta
+    cached = _reuse_or_filter_cache(store, guid, remote_version, repo, plugin_folders)
+    if cached is not None:
+        log.info("Using cached artifact %s %s after release check", guid, remote_version)
+        return cached
 
     repo_name = repo.rstrip("/").split("/")[-1]
-    asset = pick_release_asset(release.assets, guid, repo_name)
+    asset = pick_release_asset(release.assets, guid, repo_name, extra_hints=plugin_folders or ())
     log.info("Selected asset %s for %s from %s", asset.name, guid, repo)
     dest_dir = store.mod_dir(guid, remote_version)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -72,6 +71,7 @@ def ensure_mod_artifact(
         repo=repo,
         source_url=asset.download_url,
         filename=asset.name,
+        keep_folders=plugin_folders,
     )
 
 
@@ -99,8 +99,53 @@ def ensure_bepinex(
     return resolved, store.bepinex_extracted(resolved)
 
 
-def _cached_artifact_usable(store: LibraryStore, guid: str, version: str) -> bool:
-    return store.has_mod(guid, version) and not artifact_needs_refetch(store, guid, version)
+def _cached_artifact_usable(
+    store: LibraryStore,
+    guid: str,
+    version: str,
+    plugin_folders: list[str] | None = None,
+) -> bool:
+    if not store.has_mod(guid, version) or artifact_needs_refetch(store, guid, version):
+        return False
+    if not plugin_folders:
+        return True
+    meta = store.read_mod_meta(guid, version)
+    if meta is None:
+        return False
+    have = {name.lower() for name in meta.plugin_folders}
+    want = {name.lower() for name in plugin_folders if name}
+    return bool(want) and have == want
+
+
+def _reuse_or_filter_cache(
+    store: LibraryStore,
+    guid: str,
+    version: str,
+    repo: str,
+    plugin_folders: list[str] | None,
+) -> ArtifactMeta | None:
+    if _cached_artifact_usable(store, guid, version, plugin_folders):
+        existing = store.read_mod_meta(guid, version)
+        if existing:
+            log.info("Using cached artifact %s %s", guid, version)
+            return existing
+    if not plugin_folders or artifact_needs_refetch(store, guid, version):
+        return None
+    zip_path = store.mod_zip_path(guid, version)
+    meta = store.read_mod_meta(guid, version)
+    if meta is None or not zip_path.exists() or zip_path.suffix.lower() != ".zip":
+        return None
+    log.info("Re-extracting %s %s to keep folders %s", guid, version, plugin_folders)
+    return store.ingest_mod_zip(
+        guid,
+        version,
+        zip_path,
+        version_raw=meta.version_raw,
+        repo=repo or meta.repo,
+        source_url=meta.source_url,
+        filename=meta.filename,
+        keep_folders=plugin_folders,
+    )
 
 
 def _fetch_needed_release(http, store, repo, version, version_raw, progress):

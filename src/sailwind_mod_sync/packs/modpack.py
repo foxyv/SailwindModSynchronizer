@@ -101,9 +101,7 @@ class PackStore:
         src_instance = self.instance_dir(pack_id)
         dst_instance = self.instance_dir(copy.id)
         if src_instance.exists():
-            if dst_instance.exists():
-                shutil.rmtree(dst_instance)
-            shutil.copytree(src_instance, dst_instance)
+            _copy_instance(src_instance, dst_instance)
         return copy
 
     def set_mods(self, pack_id: str, mods: list[PinnedMod]) -> ModPack:
@@ -242,3 +240,21 @@ class PackStore:
             candidate = f"{base}-{index}"
             index += 1
         return candidate
+
+
+_INSTANCE_IGNORE = shutil.ignore_patterns(
+    "LogOutput.log",
+    "*.log",
+    "ErrorLog*",
+    "harmony.log",
+)
+
+
+def _copy_instance(src: Path, dst: Path) -> None:
+    """Copy a pack instance, skipping locked BepInEx logs so duplicate can finish."""
+    try:
+        if dst.exists():
+            shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src, dst, ignore=_INSTANCE_IGNORE, dirs_exist_ok=True)
+    except OSError as exc:
+        log.warning("Could not copy pack instance %s -> %s: %s", src, dst, exc)

@@ -53,7 +53,7 @@ class ModDetailsDialog(QDialog):
         form.addRow("Available releases", self.available)
         form.addRow("In packs", _selectable(_format_packs(details.pack_pins)))
 
-        self.status = QLabel("" if details.repo else "No repository URL. Use Find repo, then open details again.")
+        self.status = QLabel("" if details.repo else "No repository URL. Use Associate, then open details again.")
         self.status.setWordWrap(True)
 
         self.readme = QTextBrowser()

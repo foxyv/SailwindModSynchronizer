@@ -46,4 +46,16 @@ pip install -e ".[dev,build]"
 
 Or: `python scripts/build.py`
 
-That compiles `dist\SailwindModSynchronizer\SailwindModSynchronizer.exe`, embeds `assets/icon.png` as the application icon, and creates a **Sailwind Mod Synchronizer** shortcut on the Desktop. Pass `-SkipShortcut` / `--skip-shortcut` to skip the shortcut.
+That is an **incremental** freeze: it reuses the PyInstaller cache, skips UPX, and does not write a GitHub zip. Use it while iterating on the app.
+
+For a GitHub release zip:
+
+```powershell
+.\scripts\build.ps1 -Release
+```
+
+Or: `python scripts/build.py --release`
+
+That does a clean freeze and writes `dist\SailwindModSynchronizer-<version>-windows.zip`. Upload that zip to the GitHub release so the app can auto-update.
+
+Both modes compile `dist\SailwindModSynchronizer\SailwindModSynchronizer.exe`, embed `assets/icon.png` as the application icon, and create a **Sailwind Mod Synchronizer** shortcut on the Desktop unless you pass `-SkipShortcut` / `--skip-shortcut`.

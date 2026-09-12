@@ -33,6 +33,21 @@ def is_newer(latest_raw: str | None, current_raw: str | None) -> bool:
     return version_key(latest_raw) > version_key(current_raw)
 
 
+def guid_family(guid: str) -> str:
+    """Group alias GUIDs (sailadex / sailadex82) while keeping distinct mods separate."""
+    tail = guid.rsplit(".", 1)[-1].lower()
+    family = re.sub(r"\d+", "", tail)
+    return family or tail
+
+
+def catalog_mod_name(guid: str) -> str:
+    tail = guid.rsplit(".", 1)[-1]
+    spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", tail)
+    spaced = re.sub(r"[_\-]+", " ", spaced)
+    spaced = re.sub(r"\d+", " ", spaced)
+    return " ".join(spaced.split()).title() or guid
+
+
 def display_mod_name(
     guid: str,
     *,
@@ -70,6 +85,7 @@ class CatalogEntry:
     latest_version: str | None
     available: bool
     custom: bool = False
+    plugin_folders: list[str] = field(default_factory=list)
 
     @property
     def guid_label(self) -> str:
