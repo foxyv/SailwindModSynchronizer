@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import json
+import logging
 
-from sailwind_mod_sync.catalog.custom import load_custom_catalog, merge_with_custom
+from sailwind_mod_sync.catalog.custom import load_custom_catalog, merge_with_custom, overlay_entries
 from sailwind_mod_sync.constants import (
+    GITHUB_RAW_APP_MODLIST,
+    GITHUB_RAW_APP_VERSIONS,
     GITHUB_RAW_MODLIST,
     GITHUB_RAW_VERSIONS,
+    JSDELIVR_APP_MODLIST,
+    JSDELIVR_APP_VERSIONS,
     JSDELIVR_MODLIST,
     JSDELIVR_VERSIONS,
 )
 from sailwind_mod_sync.http_util import HttpClient, HttpError, ProgressFn
 from sailwind_mod_sync.models import CatalogEntry, catalog_mod_name, guid_family, parse_mod_version
 from sailwind_mod_sync.paths import AppPaths
+
+log = logging.getLogger(__name__)
 
 
 def refresh_catalog(
@@ -27,28 +34,45 @@ def refresh_catalog(
     paths.modlist_file.write_text(json.dumps(mod_list, indent=2), encoding="utf-8")
     paths.versions_file.write_text(json.dumps(versions, indent=2), encoding="utf-8")
     mvc = merge_catalog(mod_list, versions)
-    return merge_with_custom(mvc, load_custom_catalog(paths))
+
+    if progress:
+        progress("Fetching Sailwind Mod Synchronizer catalog…")
+    extra_list = _fetch_json_list(http, JSDELIVR_APP_MODLIST, GITHUB_RAW_APP_MODLIST, optional=True)
+    extra_versions = _fetch_json_list(http, JSDELIVR_APP_VERSIONS, GITHUB_RAW_APP_VERSIONS, optional=True)
+    if extra_list is None:
+        extra_list = _read_json_list(paths.extra_modlist_file)
+    else:
+        paths.extra_modlist_file.write_text(json.dumps(extra_list, indent=2), encoding="utf-8")
+    if extra_versions is None:
+        extra_versions = _read_json_list(paths.extra_versions_file)
+    else:
+        paths.extra_versions_file.write_text(json.dumps(extra_versions, indent=2), encoding="utf-8")
+    extra = merge_catalog(extra_list, extra_versions)
+    shared = overlay_entries(mvc, extra)
+    return merge_with_custom(shared, load_custom_catalog(paths))
 
 
 def load_mvc_entries(paths: AppPaths) -> list[CatalogEntry]:
-    if not paths.modlist_file.exists() or not paths.versions_file.exists():
-        return []
-    try:
-        mod_list = json.loads(paths.modlist_file.read_text(encoding="utf-8"))
-        versions = json.loads(paths.versions_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(mod_list, list) or not isinstance(versions, list):
-        return []
-    return merge_catalog(mod_list, versions)
+    return merge_catalog(_read_json_list(paths.modlist_file), _read_json_list(paths.versions_file))
+
+
+def load_extra_entries(paths: AppPaths) -> list[CatalogEntry]:
+    return merge_catalog(
+        _read_json_list(paths.extra_modlist_file),
+        _read_json_list(paths.extra_versions_file),
+    )
+
+
+def load_shared_catalog(paths: AppPaths) -> list[CatalogEntry]:
+    return overlay_entries(load_mvc_entries(paths), load_extra_entries(paths))
 
 
 def load_cached_catalog(paths: AppPaths) -> list[CatalogEntry] | None:
-    mvc = load_mvc_entries(paths)
+    shared = load_shared_catalog(paths)
     custom = load_custom_catalog(paths)
-    if not mvc and not custom:
+    if not shared and not custom:
         return None
-    return merge_with_custom(mvc, custom)
+    return merge_with_custom(shared, custom)
 
 
 def merge_catalog(mod_list: list, versions: list) -> list[CatalogEntry]:
@@ -73,12 +97,24 @@ def merge_catalog(mod_list: list, versions: list) -> list[CatalogEntry]:
         family = guid_family(guid)
         bucket = by_key.setdefault(
             (repo, family),
-            {"guids": [], "raw": None, "unavailable": False},
+            {"guids": [], "raw": None, "unavailable": False, "name": "", "plugin_folders": []},
         )
         families_for_repo.setdefault(repo, set()).add(family)
         if guid not in bucket["guids"]:
             bucket["guids"].append(guid)
+        name = str(item.get("name") or "").strip()
+        if name and not bucket["name"]:
+            bucket["name"] = name
+        folders_raw = item.get("plugin_folders") or []
+        if isinstance(folders_raw, list):
+            for folder in folders_raw:
+                text = str(folder).strip()
+                if text and text not in bucket["plugin_folders"]:
+                    bucket["plugin_folders"].append(text)
         raw = version_by_guid.get(guid)
+        if raw is None:
+            inline = str(item.get("version") or "").strip()
+            raw = inline or None
         if raw is None:
             continue
         if raw.lower() == "none":
@@ -97,15 +133,19 @@ def merge_catalog(mod_list: list, versions: list) -> list[CatalogEntry]:
         normalized = parse_mod_version(raw)
         available = bool(normalized) and not bucket["unavailable"]
         split_repo = len(families_for_repo.get(repo, ())) > 1
+        name = bucket["name"] or (
+            _name_from_guid(primary) if split_repo else _name_from_repo(repo)
+        )
         entries.append(
             CatalogEntry(
                 repo=repo,
                 guids=list(guids),
                 primary_guid=primary,
-                name=_name_from_guid(primary) if split_repo else _name_from_repo(repo),
+                name=name,
                 latest_raw=raw,
                 latest_version=normalized,
                 available=available,
+                plugin_folders=list(bucket["plugin_folders"]),
             )
         )
     entries.sort(key=lambda entry: entry.name.lower())
@@ -119,12 +159,32 @@ def find_entry(entries: list[CatalogEntry], guid: str) -> CatalogEntry | None:
     return None
 
 
-def _fetch_json_list(http: HttpClient, primary: str, fallback: str) -> list:
+def _read_json_list(path) -> list:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _fetch_json_list(http: HttpClient, primary: str, fallback: str, *, optional: bool = False) -> list | None:
     try:
         data, _, _ = http.get_json(primary)
-    except HttpError:
-        data, _, _ = http.get_json(fallback)
+    except HttpError as exc:
+        log.info("Catalog fetch failed %s: %s", primary, exc)
+        try:
+            data, _, _ = http.get_json(fallback)
+        except HttpError as exc:
+            log.info("Catalog fetch failed %s: %s", fallback, exc)
+            if optional:
+                return None
+            raise
     if not isinstance(data, list):
+        if optional:
+            log.info("Catalog JSON was not a list: %s", primary)
+            return None
         raise HttpError("Catalog JSON was not a list")
     return data
 

@@ -59,11 +59,17 @@ def remove_custom_entry(entries: list[CatalogEntry], guid: str) -> list[CatalogE
     ]
 
 
-def merge_with_custom(mvc: list[CatalogEntry], custom: list[CatalogEntry]) -> list[CatalogEntry]:
-    guids = {guid for entry in mvc for guid in entry.guids}
-    extra: list[CatalogEntry] = []
-    for entry in custom:
-        entry.custom = True
+def overlay_entries(
+    base: list[CatalogEntry],
+    extra: list[CatalogEntry],
+    *,
+    mark_custom: bool = False,
+) -> list[CatalogEntry]:
+    guids = {guid for entry in base for guid in entry.guids}
+    added: list[CatalogEntry] = []
+    for entry in extra:
+        if mark_custom:
+            entry.custom = True
         leftover = [guid for guid in entry.guids if guid not in guids]
         if not leftover:
             continue
@@ -71,11 +77,15 @@ def merge_with_custom(mvc: list[CatalogEntry], custom: list[CatalogEntry]) -> li
             entry.guids = leftover
             if entry.primary_guid not in leftover:
                 entry.primary_guid = leftover[0]
-        extra.append(entry)
+        added.append(entry)
         guids.update(entry.guids)
-    combined = list(mvc) + extra
+    combined = list(base) + added
     combined.sort(key=lambda item: item.name.lower())
     return combined
+
+
+def merge_with_custom(mvc: list[CatalogEntry], custom: list[CatalogEntry]) -> list[CatalogEntry]:
+    return overlay_entries(mvc, custom, mark_custom=True)
 
 
 def same_repo(left: str, right: str) -> bool:
@@ -102,14 +112,18 @@ def _entry_from_dict(data: object) -> CatalogEntry | None:
         guids_raw = []
     guids = [str(item).strip() for item in guids_raw if str(item).strip()]
     primary = str(data.get("primary_guid") or "").strip() or (guids[0] if guids else "")
-    if not repo or not primary:
+    if not primary:
         return None
     if primary not in guids:
         guids.insert(0, primary)
     raw = data.get("latest_raw")
     raw_text = None if raw is None else str(raw).strip()
     version = parse_mod_version(str(data.get("latest_version") or raw_text or ""))
-    name = str(data.get("name") or "").strip() or repo.rstrip("/").split("/")[-1]
+    name = (
+        str(data.get("name") or "").strip()
+        or repo.rstrip("/").split("/")[-1]
+        or catalog_mod_name(primary)
+    )
     folders_raw = data.get("plugin_folders") or []
     if not isinstance(folders_raw, list):
         folders_raw = []

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from unittest.mock import MagicMock, patch
 
+from sailwind_mod_sync.catalog.mvc import find_entry
 from sailwind_mod_sync.config import AppConfig
 from sailwind_mod_sync.http_util import HttpClient
 from sailwind_mod_sync.library.special_mods import COOP_GUID
@@ -141,6 +142,10 @@ def test_import_pack_does_not_abort_on_missing_mod(paths: AppPaths, tmp_path: Pa
     assert imported.name == "Shared Pack"
     assert imported.mods[0].guid == "local.discord.mystery"
     assert manager.missing_mods(imported)[0].guid == "local.discord.mystery"
+    catalog = find_entry(manager.catalog, "local.discord.mystery")
+    assert catalog is not None
+    assert catalog.custom
+    assert catalog.latest_version == "2.0.0"
     manager.close()
 
 
@@ -157,6 +162,65 @@ def test_import_pack_json_does_not_need_bepinex(paths: AppPaths, tmp_path: Path)
     imported = manager.import_pack(dest)
     assert imported.name == "Recipe Only"
     assert [mod.guid for mod in manager.missing_mods(imported)] == ["Fake.Mod"]
+    catalog = find_entry(manager.catalog, "Fake.Mod")
+    assert catalog is not None
+    assert catalog.custom
+    assert catalog.latest_version == "1.1.6"
+    manager.close()
+
+
+def test_import_pack_adds_unknown_mod_with_repo_to_catalog(paths: AppPaths, tmp_path: Path) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    source = manager.packs.create("Custom Repo Pack")
+    manager.packs.upsert_mod(
+        source.id,
+        PinnedMod(
+            guid="com.example.unlisted",
+            version="3.1.0",
+            repo="https://github.com/example/unlisted",
+            version_raw="v3.1.0",
+            plugin_folders=["UnlistedMod"],
+        ),
+    )
+    dest = tmp_path / "unlisted.json"
+    manager.export_pack(source.id, dest, bundle=False)
+    manager.packs.delete(source.id)
+    imported = manager.import_pack(dest)
+    catalog = find_entry(manager.catalog, "com.example.unlisted")
+    assert catalog is not None
+    assert catalog.custom
+    assert catalog.repo == "https://github.com/example/unlisted"
+    assert catalog.name == "UnlistedMod"
+    assert catalog.latest_raw == "v3.1.0"
+    assert imported.mods[0].guid == "com.example.unlisted"
+    manager.close()
+
+
+def test_import_pack_does_not_duplicate_existing_catalog_mod(paths: AppPaths, tmp_path: Path) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.catalog = [
+        CatalogEntry(
+            repo="https://github.com/NANDBrew/StickyFix",
+            guids=["com.nandbrew.stickyfix"],
+            primary_guid="com.nandbrew.stickyfix",
+            name="StickyFix",
+            latest_raw="v1.0.0",
+            latest_version="1.0.0",
+            available=True,
+        )
+    ]
+    source = manager.packs.create("Known Mod")
+    manager.packs.upsert_mod(
+        source.id,
+        PinnedMod(guid="com.nandbrew.stickyfix", version="1.0.0", repo=""),
+    )
+    dest = tmp_path / "known.json"
+    manager.export_pack(source.id, dest, bundle=False)
+    imported = manager.import_pack(dest)
+    catalog = find_entry(manager.catalog, "com.nandbrew.stickyfix")
+    assert catalog is not None
+    assert not catalog.custom
+    assert imported.mods[0].guid == "com.nandbrew.stickyfix"
     manager.close()
 
 

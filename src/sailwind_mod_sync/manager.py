@@ -22,7 +22,7 @@ from sailwind_mod_sync.catalog.github import (
     parse_repo_url,
     release_version,
 )
-from sailwind_mod_sync.catalog.mvc import find_entry, load_cached_catalog, load_mvc_entries, refresh_catalog
+from sailwind_mod_sync.catalog.mvc import find_entry, load_cached_catalog, load_shared_catalog, refresh_catalog
 from sailwind_mod_sync.config import AppConfig, load_config, save_config
 from sailwind_mod_sync.constants import DEFAULT_BEPINEX_VERSION
 from sailwind_mod_sync.game.backup import BackupResult, RestoreResult, backup_bepinex_folder, inspect_bepinex_zip, restore_bepinex_folder
@@ -308,7 +308,7 @@ class Manager:
         if not added:
             raise ValueError(f"All plugins from {repo} are already in the catalog")
         save_custom_catalog(self.paths, custom)
-        self.catalog = merge_with_custom(load_mvc_entries(self.paths), custom)
+        self.catalog = merge_with_custom(load_shared_catalog(self.paths), custom)
         resolved: list[CatalogEntry] = []
         for entry in added:
             found = find_entry(self.catalog, entry.primary_guid)
@@ -319,8 +319,58 @@ class Manager:
     def remove_catalog_repo(self, guid: str) -> None:
         custom = remove_custom_entry(load_custom_catalog(self.paths), guid)
         save_custom_catalog(self.paths, custom)
-        self.catalog = merge_with_custom(load_mvc_entries(self.paths), custom)
+        self.catalog = merge_with_custom(load_shared_catalog(self.paths), custom)
         log.info("Removed custom catalog entry %s", guid)
+
+    def ensure_catalog_mods(self, mods: list[PinnedMod]) -> list[CatalogEntry]:
+        if not self.catalog:
+            self.catalog = load_cached_catalog(self.paths) or []
+        custom = load_custom_catalog(self.paths)
+        working = list(self.catalog)
+        added: list[CatalogEntry] = []
+        for pinned in mods:
+            guid = (pinned.guid or "").strip()
+            if not guid or find_entry(working, guid) is not None:
+                continue
+            entry = self._catalog_entry_from_pin(pinned)
+            custom = upsert_custom_entry(custom, entry)
+            working.append(entry)
+            added.append(entry)
+        if not added:
+            return []
+        save_custom_catalog(self.paths, custom)
+        self.catalog = merge_with_custom(load_shared_catalog(self.paths), custom)
+        resolved: list[CatalogEntry] = []
+        for entry in added:
+            resolved.append(find_entry(self.catalog, entry.primary_guid) or entry)
+        log.info("Added %s imported mod(s) to the catalog", len(resolved))
+        return resolved
+
+    def _catalog_entry_from_pin(self, pinned: PinnedMod) -> CatalogEntry:
+        meta = self.library.read_mod_meta(pinned.guid, pinned.version)
+        repo = (pinned.repo or (meta.repo if meta else "") or "").strip()
+        if repo:
+            try:
+                repo = canonicalize_repo_url(repo)
+            except ValueError:
+                pass
+        folders = list(pinned.plugin_folders)
+        if not folders and meta:
+            folders = list(meta.plugin_folders)
+        raw = (pinned.version_raw or pinned.version or "").strip() or None
+        version = parse_mod_version(raw)
+        name = folders[0] if folders else catalog_mod_name(pinned.guid)
+        return CatalogEntry(
+            repo=repo,
+            guids=[pinned.guid],
+            primary_guid=pinned.guid,
+            name=name,
+            latest_raw=raw,
+            latest_version=version,
+            available=bool(version),
+            custom=True,
+            plugin_folders=folders,
+        )
 
     def mod_display_name(
         self,
@@ -915,7 +965,11 @@ class Manager:
             if progress:
                 progress(f"Resolving {len(pack.mods)} mods…")
             self.resolve_pack_artifacts(pack.id, progress=progress)
-            return self.packs.get(pack.id)
+            pack = self.packs.get(pack.id)
+            added = self.ensure_catalog_mods(pack.mods)
+            if added and progress:
+                progress(f"Added {len(added)} catalog item(s) from the pack…")
+            return pack
 
     def import_game_plugins(
         self,

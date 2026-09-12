@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QPalette
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLineEdit,
     QPushButton,
@@ -34,6 +36,9 @@ class CatalogView(QWidget):
         self._filter = QLineEdit()
         self._filter.setPlaceholderText("Filter catalog…")
         self._filter.textChanged.connect(self._apply_filter)
+        self.hide_in_pack = QCheckBox("Hide mods in pack")
+        self.hide_in_pack.setToolTip("Hide catalog rows that are already pinned on the selected pack")
+        self.hide_in_pack.toggled.connect(self._apply_filter)
 
         refresh = QPushButton("Refresh catalog")
         self.refresh_clicked = refresh.clicked
@@ -51,7 +56,8 @@ class CatalogView(QWidget):
         self.table.cellDoubleClicked.connect(self._on_double_click)
 
         top = QHBoxLayout()
-        top.addWidget(self._filter)
+        top.addWidget(self._filter, 1)
+        top.addWidget(self.hide_in_pack)
         top.addWidget(add_repo)
         top.addWidget(refresh)
 
@@ -66,15 +72,14 @@ class CatalogView(QWidget):
 
     def _apply_filter(self) -> None:
         query = self._filter.text().strip().lower()
+        hide_in_pack = self.hide_in_pack.isChecked()
         rows = [
             entry
             for entry in self._entries
-            if not query
-            or query in entry.name.lower()
-            or query in entry.primary_guid.lower()
-            or query in entry.repo.lower()
-            or any(query in guid.lower() for guid in entry.guids)
+            if _entry_matches_filter(entry, query)
+            and not (hide_in_pack and _pinned_for_entry(entry, self._pack) is not None)
         ]
+        in_pack_bg = _in_pack_row_background(self.table)
         with sorting_paused(self.table):
             self.table.setRowCount(len(rows))
             for index, entry in enumerate(rows):
@@ -110,6 +115,8 @@ class CatalogView(QWidget):
                     )
                     actions_layout.addWidget(remove)
                 self.table.setCellWidget(index, 4, actions)
+                if _pinned_for_entry(entry, self._pack) is not None:
+                    _paint_row(self.table, index, in_pack_bg, actions)
 
     def reveal_mod(self, guid: str, repo: str = "") -> bool:
         target = None
@@ -124,6 +131,8 @@ class CatalogView(QWidget):
                     break
         if target is None:
             return False
+        if self.hide_in_pack.isChecked() and _pinned_for_entry(target, self._pack) is not None:
+            self.hide_in_pack.setChecked(False)
         if self._filter.text():
             self._filter.clear()
         key = target.primary_guid.casefold()
@@ -196,3 +205,34 @@ def _catalog_status(entry: CatalogEntry, pack: ModPack | None) -> str:
     if entry.latest_raw and is_newer(entry.latest_raw, pinned.version):
         return "Update"
     return f"Installed {pinned.version}"
+
+
+def _entry_matches_filter(entry: CatalogEntry, query: str) -> bool:
+    if not query:
+        return True
+    return (
+        query in entry.name.lower()
+        or query in entry.primary_guid.lower()
+        or query in entry.repo.lower()
+        or any(query in guid.lower() for guid in entry.guids)
+    )
+
+
+def _in_pack_row_background(widget: QWidget) -> QColor:
+    base = widget.palette().color(QPalette.ColorRole.Base)
+    tint = base.lighter(118)
+    if tint == base:
+        tint = base.darker(104)
+    return tint
+
+
+def _paint_row(table: QTableWidget, row: int, color: QColor, actions: QWidget) -> None:
+    brush = QBrush(color)
+    for column in range(table.columnCount()):
+        item = table.item(row, column)
+        if item is not None:
+            item.setBackground(brush)
+    actions.setAutoFillBackground(True)
+    palette = actions.palette()
+    palette.setColor(QPalette.ColorRole.Window, color)
+    actions.setPalette(palette)

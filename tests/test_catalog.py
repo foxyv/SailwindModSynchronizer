@@ -55,6 +55,28 @@ def test_merge_splits_distinct_mods_in_one_repo() -> None:
     assert by_guid["com.dizzy.sailwind.calendar"].latest_version == "0.2.0"
 
 
+def test_merge_catalog_reads_name_folders_and_inline_version() -> None:
+    entries = merge_catalog(
+        [
+            {
+                "guid": "com.dizzy.sailwind.calendar",
+                "repo": "https://github.com/foxyv/dizzy_sailwind_mods",
+                "name": "Dizzy.Calendar",
+                "plugin_folders": ["Dizzy.Calendar"],
+                "version": "v0.2.0",
+            }
+        ],
+        [],
+    )
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.name == "Dizzy.Calendar"
+    assert entry.plugin_folders == ["Dizzy.Calendar"]
+    assert entry.latest_version == "0.2.0"
+    assert entry.available
+    assert not entry.custom
+
+
 def test_parse_github_and_gitlab_urls() -> None:
     github = parse_repo_url("https://github.com/foxyv/dizzy_sailwind_mods/")
     assert github.is_github
@@ -323,6 +345,33 @@ def test_load_custom_catalog_splits_bundled_repo(paths: AppPaths) -> None:
     assert by_guid["com.TheOriginOfAllEvil.clipper"].name == "Clipper"
 
 
+def test_load_custom_catalog_keeps_entry_without_repo(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.custom import load_custom_catalog, save_custom_catalog
+    from sailwind_mod_sync.models import CatalogEntry
+
+    save_custom_catalog(
+        paths,
+        [
+            CatalogEntry(
+                repo="",
+                guids=["local.discord.mystery"],
+                primary_guid="local.discord.mystery",
+                name="Mystery",
+                latest_raw="2.0.0",
+                latest_version="2.0.0",
+                available=True,
+                custom=True,
+            )
+        ],
+    )
+    loaded = load_custom_catalog(paths)
+    assert len(loaded) == 1
+    assert loaded[0].primary_guid == "local.discord.mystery"
+    assert loaded[0].repo == ""
+    assert loaded[0].name == "Mystery"
+    assert loaded[0].latest_version == "2.0.0"
+
+
 class _ReadmeHttp:
     def get_bytes(self, url, extra_headers=None):
         assert url.endswith("/readme")
@@ -357,3 +406,156 @@ def test_fetch_readme_and_list_releases() -> None:
     assert "Crew a ship" in text
     releases = list_releases(http, "https://github.com/DiamondMiner99/sailwind-coop")
     assert [item.tag for item in releases] == ["v0.3.2"]
+
+
+class _CatalogHttp:
+    def __init__(self, payloads: dict[str, object], missing: set[str] | None = None) -> None:
+        self.payloads = payloads
+        self.missing = missing or set()
+        self.urls: list[str] = []
+
+    def get_json(self, url, extra_headers=None, etag=None):
+        self.urls.append(url)
+        if url in self.missing:
+            raise HttpError("HTTP 404", status_code=404)
+        if url not in self.payloads:
+            raise HttpError(f"unexpected {url}", status_code=404)
+        return self.payloads[url], None, False
+
+
+def test_refresh_catalog_merges_project_list(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.mvc import find_entry, refresh_catalog
+    from sailwind_mod_sync.constants import (
+        GITHUB_RAW_APP_MODLIST,
+        GITHUB_RAW_APP_VERSIONS,
+        GITHUB_RAW_MODLIST,
+        GITHUB_RAW_VERSIONS,
+        JSDELIVR_APP_MODLIST,
+        JSDELIVR_APP_VERSIONS,
+        JSDELIVR_MODLIST,
+        JSDELIVR_VERSIONS,
+    )
+
+    http = _CatalogHttp(
+        {
+            JSDELIVR_MODLIST: [
+                {"guid": "com.nandbrew.stickyfix", "repo": "https://github.com/NANDbrew/StickyFix"},
+            ],
+            JSDELIVR_VERSIONS: [
+                {
+                    "guid": "com.nandbrew.stickyfix",
+                    "repo": "https://github.com/NANDbrew/StickyFix",
+                    "version": "v1.0.0",
+                }
+            ],
+            JSDELIVR_APP_MODLIST: [
+                {
+                    "guid": "com.dizzy.sailwind.calendar",
+                    "repo": "https://github.com/foxyv/dizzy_sailwind_mods",
+                    "name": "Dizzy.Calendar",
+                    "plugin_folders": ["Dizzy.Calendar"],
+                }
+            ],
+            JSDELIVR_APP_VERSIONS: [
+                {
+                    "guid": "com.dizzy.sailwind.calendar",
+                    "repo": "https://github.com/foxyv/dizzy_sailwind_mods",
+                    "version": "v0.2.0",
+                }
+            ],
+        }
+    )
+    entries = refresh_catalog(paths, http)
+    sticky = find_entry(entries, "com.nandbrew.stickyfix")
+    calendar = find_entry(entries, "com.dizzy.sailwind.calendar")
+    assert sticky is not None and not sticky.custom
+    assert calendar is not None and not calendar.custom
+    assert calendar.name == "Dizzy.Calendar"
+    assert calendar.plugin_folders == ["Dizzy.Calendar"]
+    assert calendar.latest_version == "0.2.0"
+    assert GITHUB_RAW_MODLIST not in http.urls
+    assert GITHUB_RAW_VERSIONS not in http.urls
+    assert GITHUB_RAW_APP_MODLIST not in http.urls
+    assert GITHUB_RAW_APP_VERSIONS not in http.urls
+    from sailwind_mod_sync.catalog.mvc import load_cached_catalog
+
+    cached = load_cached_catalog(paths)
+    assert cached is not None
+    assert find_entry(cached, "com.dizzy.sailwind.calendar") is not None
+
+
+def test_refresh_catalog_skips_project_mods_already_in_mvc(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.mvc import find_entry, refresh_catalog
+    from sailwind_mod_sync.constants import (
+        JSDELIVR_APP_MODLIST,
+        JSDELIVR_APP_VERSIONS,
+        JSDELIVR_MODLIST,
+        JSDELIVR_VERSIONS,
+    )
+
+    http = _CatalogHttp(
+        {
+            JSDELIVR_MODLIST: [
+                {"guid": "com.nandbrew.stickyfix", "repo": "https://github.com/NANDbrew/StickyFix"},
+            ],
+            JSDELIVR_VERSIONS: [
+                {
+                    "guid": "com.nandbrew.stickyfix",
+                    "repo": "https://github.com/NANDbrew/StickyFix",
+                    "version": "v1.0.0",
+                }
+            ],
+            JSDELIVR_APP_MODLIST: [
+                {"guid": "com.nandbrew.stickyfix", "repo": "https://github.com/example/fork"},
+            ],
+            JSDELIVR_APP_VERSIONS: [
+                {
+                    "guid": "com.nandbrew.stickyfix",
+                    "repo": "https://github.com/example/fork",
+                    "version": "v9.9.9",
+                }
+            ],
+        }
+    )
+    entries = refresh_catalog(paths, http)
+    matches = [entry for entry in entries if "stickyfix" in entry.primary_guid.lower()]
+    assert len(matches) == 1
+    assert matches[0].repo.endswith("StickyFix")
+    assert matches[0].latest_version == "1.0.0"
+    assert find_entry(entries, "com.nandbrew.stickyfix") is not None
+
+
+def test_refresh_catalog_keeps_mvc_when_project_list_missing(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.mvc import find_entry, refresh_catalog
+    from sailwind_mod_sync.constants import (
+        GITHUB_RAW_APP_MODLIST,
+        GITHUB_RAW_APP_VERSIONS,
+        JSDELIVR_APP_MODLIST,
+        JSDELIVR_APP_VERSIONS,
+        JSDELIVR_MODLIST,
+        JSDELIVR_VERSIONS,
+    )
+
+    http = _CatalogHttp(
+        {
+            JSDELIVR_MODLIST: [
+                {"guid": "com.nandbrew.stickyfix", "repo": "https://github.com/NANDbrew/StickyFix"},
+            ],
+            JSDELIVR_VERSIONS: [
+                {
+                    "guid": "com.nandbrew.stickyfix",
+                    "repo": "https://github.com/NANDbrew/StickyFix",
+                    "version": "v1.0.0",
+                }
+            ],
+        },
+        missing={
+            JSDELIVR_APP_MODLIST,
+            JSDELIVR_APP_VERSIONS,
+            GITHUB_RAW_APP_MODLIST,
+            GITHUB_RAW_APP_VERSIONS,
+        },
+    )
+    entries = refresh_catalog(paths, http)
+    assert find_entry(entries, "com.nandbrew.stickyfix") is not None
+    assert find_entry(entries, "com.dizzy.sailwind.calendar") is None

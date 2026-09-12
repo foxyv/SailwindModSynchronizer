@@ -175,8 +175,6 @@ class MainWindow(QMainWindow):
 
         settings_action = self.menuBar().addAction("Settings")
         settings_action.triggered.connect(self._open_settings)
-        scan_action = self.menuBar().addAction("Scan updates")
-        scan_action.triggered.connect(self._scan_updates)
         backup_menu = self.menuBar().addMenu("Backup")
         self.backup_action = backup_menu.addAction("Backup BepInEx")
         self.backup_action.setStatusTip(
@@ -209,6 +207,9 @@ class MainWindow(QMainWindow):
         manage_downloads.triggered.connect(self._open_downloads)
         import_mod_action = downloads_menu.addAction("Import mod file…")
         import_mod_action.triggered.connect(self._import_local_mod)
+        scan_action = downloads_menu.addAction("Scan updates")
+        scan_action.setStatusTip("Check GitHub and GitLab for newer catalog versions")
+        scan_action.triggered.connect(self._scan_updates)
         help_menu = self.menuBar().addMenu("Help")
         check_updates = help_menu.addAction("Check for updates…")
         check_updates.triggered.connect(self._check_for_updates)

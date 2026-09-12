@@ -21,6 +21,8 @@ class AppPaths:
         self.catalog_dir = self.root / "catalog"
         self.modlist_file = self.catalog_dir / "ModList.json"
         self.versions_file = self.catalog_dir / "release_versions.json"
+        self.extra_modlist_file = self.catalog_dir / "sms_ModList.json"
+        self.extra_versions_file = self.catalog_dir / "sms_release_versions.json"
         self.custom_catalog_file = self.catalog_dir / "custom.json"
         self.etag_dir = self.catalog_dir / "etags"
         self.library_mods = self.root / "library" / "mods"

@@ -3,7 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QLabel, QPushButton, QTableWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+)
 
 from sailwind_mod_sync.config import AppConfig
 from sailwind_mod_sync.models import CatalogEntry, LibraryEntry, ArtifactMeta, ModDetails, ModPack, PinnedMod
@@ -92,6 +100,8 @@ def test_catalog_view_has_add_repo_button() -> None:
         labels = [button.text() for button in buttons]
         assert "Add GitHub repo" in labels
         assert "Refresh catalog" in labels
+        boxes = [box.text() for box in view.findChildren(QCheckBox)]
+        assert "Hide mods in pack" in boxes
     finally:
         view.deleteLater()
     app.processEvents()
@@ -284,6 +294,43 @@ def test_catalog_double_click_requests_details() -> None:
         view.set_data([_catalog_entry("com.example.mod", "1.2.0")], None)
         view._on_double_click(0, 0)
         assert caught == ["com.example.mod"]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_catalog_hides_in_pack_rows_and_tints_them() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    pack = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[PinnedMod(guid="com.example.mod", version="1.2.0")],
+    )
+    try:
+        view.set_data(
+            [_catalog_entry("com.example.mod"), _catalog_entry("com.example.other")],
+            pack,
+        )
+        assert view.table.rowCount() == 2
+
+        def color_for(guid: str):
+            for row in range(view.table.rowCount()):
+                if view.table.item(row, 1).text() == guid:
+                    return view.table.item(row, 0).background().color()
+            raise AssertionError(guid)
+
+        assert color_for("com.example.mod") != color_for("com.example.other")
+        view.hide_in_pack.setChecked(True)
+        assert view.table.rowCount() == 1
+        assert view.table.item(0, 1).text() == "com.example.other"
+        assert view.reveal_mod("com.example.mod")
+        assert not view.hide_in_pack.isChecked()
+        selected = [
+            view.table.item(index.row(), 1).text()
+            for index in view.table.selectionModel().selectedRows()
+        ]
+        assert selected == ["com.example.mod"]
     finally:
         view.deleteLater()
     app.processEvents()
@@ -590,8 +637,9 @@ def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
             if action.menu() and action.menu().title().replace("&", "") == "Download Management"
         )
         download_items = [action.text().replace("&", "") for action in downloads_menu.actions()]
-        assert "Manage downloads…" in download_items
-        assert "Import mod file…" in download_items
+        assert download_items == ["Manage downloads…", "Import mod file…", "Scan updates"]
+        top_level = [action.text().replace("&", "") for action in window.menuBar().actions()]
+        assert "Scan updates" not in top_level
         assert window._downloads.windowTitle() == "Download Management"
         assert not window._downloads.isVisible()
         window._open_downloads()

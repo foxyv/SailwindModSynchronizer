@@ -27,7 +27,7 @@ Config, catalog cache, artifact library, and ModPack instances live under:
 
 Override with `SAILWIND_MOD_SYNC_HOME`.
 
-BepInEx is downloaded from Thunderstore **BepInExPack**. Mods are downloaded from GitHub/GitLab **release zip assets** listed in ModVersionChecker. On the Catalog tab you can also **Add GitHub repo** for projects that are not in that list. Play copies `winhttp.dll` into the game folder and launches `Sailwind.exe` with `--doorstop-target-assembly` pointed at the selected pack.
+BepInEx is downloaded from Thunderstore **BepInExPack**. Mods are downloaded from GitHub/GitLab **release zip assets** listed in ModVersionChecker. Extra mods that are not in that list live in this repo's [`catalog/ModList.json`](catalog/ModList.json) (and [`catalog/release_versions.json`](catalog/release_versions.json)) on `master`; **Refresh catalog** and **Scan updates** merge them in after MVC. On the Catalog tab you can also **Add GitHub repo** for projects that are not in either list. Play copies `winhttp.dll` into the game folder and launches `Sailwind.exe` with `--doorstop-target-assembly` pointed at the selected pack.
 
 ## Tests
 
