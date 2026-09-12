@@ -29,6 +29,7 @@ from sailwind_mod_sync.catalog.custom import same_repo
 from sailwind_mod_sync.catalog.mvc import find_entry
 from sailwind_mod_sync.constants import APP_NAME, APP_REPO, APP_VERSION
 from sailwind_mod_sync.game.backup import BackupError, inspect_bepinex_zip
+from sailwind_mod_sync.game.saves import inspect_saves_zip
 from sailwind_mod_sync.manager import Manager
 from sailwind_mod_sync.models import PinnedMod, parse_mod_version, version_key
 from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, AssociateTarget
@@ -185,6 +186,17 @@ class MainWindow(QMainWindow):
         self.restore_action = backup_menu.addAction("Restore BepInEx")
         self.restore_action.setStatusTip("Replace the current BepInEx folder from a backup zip")
         self.restore_action.triggered.connect(self._restore_bepinex)
+        backup_menu.addSeparator()
+        self.backup_saves_action = backup_menu.addAction("Backup saves")
+        self.backup_saves_action.setStatusTip(
+            "Zip Sailwind save slots from AppData (skips Unity logs)"
+        )
+        self.backup_saves_action.triggered.connect(self._backup_saves)
+        self.restore_saves_action = backup_menu.addAction("Restore saves")
+        self.restore_saves_action.setStatusTip(
+            "Replace current Sailwind saves from a backup zip (backs up existing saves first)"
+        )
+        self.restore_saves_action.triggered.connect(self._restore_saves)
         backup_menu.addSeparator()
         import_game_action = backup_menu.addAction("Import game plugins")
         import_game_action.setStatusTip("Create a ModPack from plugins currently in the game BepInEx folder")
@@ -615,6 +627,92 @@ class MainWindow(QMainWindow):
             self,
             "Restore complete",
             f"Restored {result.file_count} files to\n{result.dest}",
+        )
+
+    def _backup_saves(self) -> None:
+        source = self.manager.saves_dir()
+        if not source.is_dir():
+            QMessageBox.warning(
+                self,
+                "No save folder",
+                f"Sailwind save folder not found:\n{source}",
+            )
+            return
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        default = self.manager.paths.backups_dir / f"Saves-{stamp}.zip"
+        self.manager.paths.backups_dir.mkdir(parents=True, exist_ok=True)
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Backup Sailwind saves",
+            str(default),
+            "Zip archive (*.zip)",
+        )
+        if not path:
+            return
+        dest = Path(path)
+        if dest.suffix.lower() != ".zip":
+            dest = dest.with_suffix(".zip")
+
+        def work(progress):
+            return self.manager.backup_saves(dest, source=source, progress=progress)
+
+        self._run(work, self._saves_backed_up, f"Backing up {source}…")
+
+    def _saves_backed_up(self, result) -> None:
+        extra = f" ({result.skipped} skipped)" if result.skipped else ""
+        self.statusBar().showMessage(f"Backed up {result.file_count} save files{extra} to {result.dest}")
+        QMessageBox.information(
+            self,
+            "Backup complete",
+            f"Saved {result.file_count} files from\n{result.source}\n\nto\n{result.dest}{extra}",
+        )
+
+    def _restore_saves(self) -> None:
+        start = str(self.manager.paths.backups_dir)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Restore Sailwind saves",
+            start,
+            "Zip archive (*.zip)",
+        )
+        if not path:
+            return
+        archive = Path(path)
+        try:
+            inspect_saves_zip(archive)
+        except BackupError as exc:
+            QMessageBox.critical(self, "Not a save backup", str(exc))
+            return
+        dest = self.manager.saves_dir()
+        if (
+            QMessageBox.question(
+                self,
+                "Restore saves",
+                (
+                    "Replace the current Sailwind saves?\n\n"
+                    f"{dest}\n\n"
+                    "Existing saves will be backed up automatically first. "
+                    "Close Sailwind first."
+                ),
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        def work(progress):
+            return self.manager.restore_saves(archive, dest=dest, progress=progress)
+
+        self._run(work, self._saves_restored, f"Restoring {archive.name}…")
+
+    def _saves_restored(self, result) -> None:
+        safety = ""
+        if result.safety_backup is not None:
+            safety = f"\n\nPrevious saves were backed up to\n{result.safety_backup}"
+        self.statusBar().showMessage(f"Restored {result.file_count} save files to {result.dest}")
+        QMessageBox.information(
+            self,
+            "Restore complete",
+            f"Restored {result.file_count} files to\n{result.dest}{safety}",
         )
 
     def _refresh_catalog(self) -> None:
@@ -1127,6 +1225,8 @@ class MainWindow(QMainWindow):
         self.vanilla_button.setEnabled(False)
         self.backup_action.setEnabled(False)
         self.restore_action.setEnabled(False)
+        self.backup_saves_action.setEnabled(False)
+        self.restore_saves_action.setEnabled(False)
         self._set_views_enabled(False)
         self.statusBar().showMessage(busy_message)
 
@@ -1173,6 +1273,8 @@ class MainWindow(QMainWindow):
         self.vanilla_button.setEnabled(True)
         self.backup_action.setEnabled(True)
         self.restore_action.setEnabled(True)
+        self.backup_saves_action.setEnabled(True)
+        self.restore_saves_action.setEnabled(True)
         self._set_views_enabled(True)
 
     @Slot(str)

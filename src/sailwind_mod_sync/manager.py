@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from sailwind_mod_sync.catalog.custom import (
@@ -25,6 +26,13 @@ from sailwind_mod_sync.catalog.mvc import find_entry, load_cached_catalog, load_
 from sailwind_mod_sync.config import AppConfig, load_config, save_config
 from sailwind_mod_sync.constants import DEFAULT_BEPINEX_VERSION
 from sailwind_mod_sync.game.backup import BackupResult, RestoreResult, backup_bepinex_folder, inspect_bepinex_zip, restore_bepinex_folder
+from sailwind_mod_sync.game.saves import (
+    SaveRestoreResult,
+    backup_saves_folder,
+    default_saves_dir,
+    inspect_saves_zip,
+    restore_saves_folder,
+)
 from sailwind_mod_sync.game.bepinex import doorstop_installed, install_doorstop, write_doorstop_config
 from sailwind_mod_sync.game.detect import detect_game_path, resolve_game_dir
 from sailwind_mod_sync.game.launch import launch_modded, launch_vanilla
@@ -146,6 +154,36 @@ class Manager:
         if dest is None:
             dest, _kind = self.resolve_bepinex_restore_target(pack_id)
         return restore_bepinex_folder(archive, dest, progress=progress)
+
+    def saves_dir(self) -> Path:
+        return default_saves_dir()
+
+    def backup_saves(
+        self,
+        dest: Path,
+        source: Path | None = None,
+        progress: ProgressFn | None = None,
+    ) -> BackupResult:
+        if source is None:
+            source = self.saves_dir()
+        if progress:
+            progress(f"Zipping {source}…")
+        return backup_saves_folder(source, dest, progress=progress)
+
+    def restore_saves(
+        self,
+        archive: Path,
+        dest: Path | None = None,
+        safety_dest: Path | None = None,
+        progress: ProgressFn | None = None,
+    ) -> SaveRestoreResult:
+        inspect_saves_zip(archive)
+        if dest is None:
+            dest = self.saves_dir()
+        if safety_dest is None:
+            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            safety_dest = self.paths.backups_dir / f"Saves-before-restore-{stamp}.zip"
+        return restore_saves_folder(archive, dest, safety_dest=safety_dest, progress=progress)
 
     def refresh_catalog(self, progress: ProgressFn | None = None) -> list[CatalogEntry]:
         self.catalog = refresh_catalog(self.paths, self.http, progress=progress)

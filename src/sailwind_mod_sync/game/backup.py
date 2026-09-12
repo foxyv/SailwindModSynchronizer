@@ -36,6 +36,16 @@ def backup_bepinex_folder(source: Path, dest: Path, progress: ProgressFn | None 
     files = [path for path in source.rglob("*") if path.is_file()]
     if not files:
         raise FileNotFoundError(f"BepInEx folder is empty: {source}")
+    return zip_folder(source, dest, files, progress=progress)
+
+
+def zip_folder(
+    source: Path,
+    dest: Path,
+    files: list[Path],
+    progress: ProgressFn | None = None,
+) -> BackupResult:
+    source = source.resolve()
     dest = dest.resolve()
     if dest.suffix.lower() != ".zip":
         dest = dest.with_suffix(".zip")
