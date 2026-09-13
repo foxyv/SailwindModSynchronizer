@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -32,6 +33,7 @@ from sailwind_mod_sync.game.backup import BackupError, inspect_bepinex_zip
 from sailwind_mod_sync.game.saves import inspect_saves_zip
 from sailwind_mod_sync.manager import Manager
 from sailwind_mod_sync.models import PinnedMod, parse_mod_version, version_key
+from sailwind_mod_sync.packs.share import DISCORD_MESSAGE_LIMIT, parse_share_text
 from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, AssociateTarget
 from sailwind_mod_sync.ui.catalog_view import CatalogView
 from sailwind_mod_sync.ui.downloads_window import DownloadsWindow
@@ -94,6 +96,8 @@ class MainWindow(QMainWindow):
         self.pack_list = QListWidget()
         self.pack_list.currentItemChanged.connect(self._on_pack_selected)
         self.pack_list.itemDoubleClicked.connect(lambda _item: self._rename_pack())
+        self.pack_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pack_list.customContextMenuRequested.connect(self._pack_context_menu)
 
         self.play_button = QPushButton("Play")
         self.play_button.setMinimumHeight(48)
@@ -116,6 +120,12 @@ class MainWindow(QMainWindow):
         export_btn.clicked.connect(self._export_pack)
         import_btn = QPushButton("Import")
         import_btn.clicked.connect(self._import_pack)
+        copy_btn = QPushButton("Copy")
+        copy_btn.setToolTip("Copy ModPack to clipboard for Discord or chat")
+        copy_btn.clicked.connect(self._copy_pack)
+        paste_btn = QPushButton("Paste")
+        paste_btn.setToolTip("Paste a ModPack from clipboard")
+        paste_btn.clicked.connect(self._paste_pack)
 
         pack_buttons = QHBoxLayout()
         pack_buttons.addWidget(new_btn)
@@ -127,12 +137,17 @@ class MainWindow(QMainWindow):
         io_buttons.addWidget(export_btn)
         io_buttons.addWidget(import_btn)
 
+        share_buttons = QHBoxLayout()
+        share_buttons.addWidget(copy_btn)
+        share_buttons.addWidget(paste_btn)
+
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(QLabel("ModPacks"))
         left_layout.addWidget(self.pack_list, 1)
         left_layout.addLayout(pack_buttons)
         left_layout.addLayout(io_buttons)
+        left_layout.addLayout(share_buttons)
         left_layout.addWidget(self.play_button)
         left_layout.addWidget(self.vanilla_button)
 
@@ -478,6 +493,58 @@ class MainWindow(QMainWindow):
         self.manager.save_config()
         self._reload_packs()
         self._reload_views()
+
+    def _pack_context_menu(self, pos) -> None:
+        item = self.pack_list.itemAt(pos)
+        if item is not None:
+            self.pack_list.setCurrentItem(item)
+        menu = QMenu(self)
+        copy_action = menu.addAction("Copy ModPack to clipboard")
+        paste_action = menu.addAction("Paste ModPack from clipboard")
+        copy_action.setEnabled(self.current_pack_id() is not None)
+        chosen = menu.exec(self.pack_list.mapToGlobal(pos))
+        if chosen == copy_action:
+            self._copy_pack()
+        elif chosen == paste_action:
+            self._paste_pack()
+
+    def _copy_pack(self) -> None:
+        pack_id = self.current_pack_id()
+        if not pack_id:
+            QMessageBox.warning(self, "No pack", "Select a ModPack to copy.")
+            return
+        pack = self.manager.packs.get(pack_id)
+        try:
+            text = self.manager.share_pack_text(pack_id)
+        except Exception as exc:
+            QMessageBox.critical(self, "Copy failed", str(exc))
+            return
+        QApplication.clipboard().setText(text)
+        chars = len(text)
+        self.statusBar().showMessage(f"Copied {pack.name} to clipboard ({chars} characters)")
+        if chars > DISCORD_MESSAGE_LIMIT:
+            QMessageBox.information(
+                self,
+                "Copied ModPack",
+                (
+                    f"{pack.name} is on the clipboard ({chars} characters).\n\n"
+                    "That is over Discord's usual 2000-character message limit. "
+                    "Paste into a Discord code snippet, or use Export for a file."
+                ),
+            )
+
+    def _paste_pack(self) -> None:
+        text = QApplication.clipboard().text()
+        try:
+            parse_share_text(text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Paste ModPack", str(exc))
+            return
+
+        def work(progress):
+            return self.manager.import_pack_text(text, progress=progress)
+
+        self._run(work, self._imported, "Importing ModPack…")
 
     def _export_pack(self) -> None:
         pack_id = self.current_pack_id()

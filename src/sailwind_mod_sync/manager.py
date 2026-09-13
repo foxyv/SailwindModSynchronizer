@@ -61,6 +61,7 @@ from sailwind_mod_sync.packs.instance import (
     sync_pack_plugins,
 )
 from sailwind_mod_sync.packs.modpack import PackStore
+from sailwind_mod_sync.packs.share import encode_pack_share, parse_share_text
 from sailwind_mod_sync.paths import AppPaths
 
 log = logging.getLogger(__name__)
@@ -949,6 +950,9 @@ class Manager:
             return self.packs.export_bundle(pack_id, dest, self.library)
         return self.packs.export_json(pack_id, dest)
 
+    def share_pack_text(self, pack_id: str) -> str:
+        return encode_pack_share(self.packs.get(pack_id))
+
     def import_pack(self, path: Path, progress: ProgressFn | None = None) -> ModPack:
         path = Path(path)
         with log_duration(log, f"import pack {path}"):
@@ -962,14 +966,31 @@ class Manager:
                 len(pack.mods),
                 path,
             )
+            return self._finish_imported_pack(pack, progress)
+
+    def import_pack_text(self, text: str, progress: ProgressFn | None = None) -> ModPack:
+        payload = parse_share_text(text)
+        with log_duration(log, "import pack from clipboard"):
             if progress:
-                progress(f"Resolving {len(pack.mods)} mods…")
-            self.resolve_pack_artifacts(pack.id, progress=progress)
-            pack = self.packs.get(pack.id)
-            added = self.ensure_catalog_mods(pack.mods)
-            if added and progress:
-                progress(f"Added {len(added)} catalog item(s) from the pack…")
-            return pack
+                progress("Reading pack…")
+            pack = self.packs.import_manifest(payload)
+            log.info(
+                "Imported recipe %s (%s) with %s mod(s) from clipboard",
+                pack.id,
+                pack.name,
+                len(pack.mods),
+            )
+            return self._finish_imported_pack(pack, progress)
+
+    def _finish_imported_pack(self, pack: ModPack, progress: ProgressFn | None) -> ModPack:
+        if progress:
+            progress(f"Resolving {len(pack.mods)} mods…")
+        self.resolve_pack_artifacts(pack.id, progress=progress)
+        pack = self.packs.get(pack.id)
+        added = self.ensure_catalog_mods(pack.mods)
+        if added and progress:
+            progress(f"Added {len(added)} catalog item(s) from the pack…")
+        return pack
 
     def import_game_plugins(
         self,

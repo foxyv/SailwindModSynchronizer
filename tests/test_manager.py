@@ -196,6 +196,31 @@ def test_import_pack_adds_unknown_mod_with_repo_to_catalog(paths: AppPaths, tmp_
     manager.close()
 
 
+def test_import_pack_text_creates_new_pack(paths: AppPaths) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    source = manager.packs.create("Clipboard Crew")
+    manager.packs.upsert_mod(
+        source.id,
+        PinnedMod(
+            guid="com.example.unlisted",
+            version="3.1.0",
+            repo="https://github.com/example/unlisted",
+            enabled=False,
+        ),
+    )
+    text = manager.share_pack_text(source.id)
+    manager.packs.delete(source.id)
+    imported = manager.import_pack_text(text)
+    assert imported.name == "Clipboard Crew"
+    assert imported.id
+    assert imported.mods[0].guid == "com.example.unlisted"
+    assert imported.mods[0].enabled is False
+    catalog = find_entry(manager.catalog, "com.example.unlisted")
+    assert catalog is not None
+    assert catalog.custom
+    manager.close()
+
+
 def test_import_pack_does_not_duplicate_existing_catalog_mod(paths: AppPaths, tmp_path: Path) -> None:
     manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
     manager.catalog = [

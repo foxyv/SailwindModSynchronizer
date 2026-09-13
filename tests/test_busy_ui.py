@@ -638,6 +638,9 @@ def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
         )
         download_items = [action.text().replace("&", "") for action in downloads_menu.actions()]
         assert download_items == ["Manage downloads…", "Import mod file…", "Scan updates"]
+        labels = [button.text() for button in window.findChildren(QPushButton)]
+        assert "Copy" in labels
+        assert "Paste" in labels
         top_level = [action.text().replace("&", "") for action in window.menuBar().actions()]
         assert "Scan updates" not in top_level
         assert window._downloads.windowTitle() == "Download Management"
@@ -681,6 +684,44 @@ def test_duplicate_pack_appears_and_is_selected(paths: AppPaths, monkeypatch) ->
         names = [window.pack_list.item(index).text() for index in range(window.pack_list.count())]
         assert f"{source} copy" in names
         assert window.pack_list.currentItem().text() == f"{source} copy"
+    finally:
+        window.close()
+        window.deleteLater()
+        manager.close()
+    app.processEvents()
+
+
+def test_copy_pack_puts_share_text_on_clipboard(paths: AppPaths) -> None:
+    from sailwind_mod_sync.http_util import HttpClient
+    from sailwind_mod_sync.manager import Manager
+    from sailwind_mod_sync.packs.share import parse_share_text
+    from sailwind_mod_sync.ui.main_window import MainWindow
+
+    class _NoHttp(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def close(self) -> None:
+            return None
+
+    app = QApplication.instance() or QApplication([])
+    manager = Manager(paths=paths, config=AppConfig(check_for_updates=False), http=_NoHttp())
+    manager.catalog = [_catalog_entry()]
+    pack = manager.packs.create("Clipboard Crew")
+    manager.packs.upsert_mod(
+        pack.id,
+        PinnedMod(guid="com.example.mod", version="1.2.0", repo="https://github.com/example/mod"),
+    )
+    window = MainWindow(manager)
+    try:
+        window._reload_packs(select_id=pack.id)
+        window._copy_pack()
+        parsed = parse_share_text(QApplication.clipboard().text())
+        assert parsed["name"] == "Clipboard Crew"
+        assert parsed["mods"][0]["guid"] == "com.example.mod"
+        assert "Copied Clipboard Crew" in window.statusBar().currentMessage()
     finally:
         window.close()
         window.deleteLater()
