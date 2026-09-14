@@ -3,7 +3,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
-from sailwind_mod_sync.http_util import HttpClient
+from sailwind_mod_sync.http_util import HttpClient, HttpError
 from sailwind_mod_sync.library.download import ensure_mod_artifact
 from sailwind_mod_sync.library.special_mods import (
     COOP_GUID,
@@ -111,3 +111,43 @@ def test_refetches_incomplete_coop_artifact(paths: AppPaths, tmp_path: Path, mon
     plugin = store.mod_extracted(COOP_GUID, "0.3.2") / "SailwindCoop"
     assert (plugin / "steam_api64.dll").read_bytes() == b"steam-api"
     assert artifact_ready(store, COOP_GUID, "0.3.2")
+
+
+def test_fetches_release_by_version_when_tag_is_not_a_version(
+    paths: AppPaths, tmp_path: Path, monkeypatch
+) -> None:
+    """A release tagged with a literal word (e.g. "release") whose version only
+    lives in the release name is still fetched when individual tag lookups 404.
+    Regression: BryanP-JP19/SailwindSeaLifeMod failed install with HTTP 404 on
+    /releases/tags/v0.0.1 after its real tag ("release") was no longer used.
+    """
+    store = LibraryStore(paths)
+    http = _FakeHttp(b"MZ" + b"\0" * 16)
+
+    def fake_fetch(*args, **kwargs):
+        if kwargs.get("tag") is not None:
+            raise HttpError("404 Not Found")
+        raise AssertionError("fetch_release without a tag should not be reached when version is set")
+
+    def fake_list_releases(*args, **kwargs):
+        return [
+            RemoteRelease(
+                tag="release",
+                name="0.0.1",
+                assets=[ReleaseAsset("SeaLifeMod.dll", "https://example/SeaLifeMod.dll")],
+            )
+        ]
+
+    monkeypatch.setattr("sailwind_mod_sync.library.download.fetch_release", fake_fetch)
+    monkeypatch.setattr("sailwind_mod_sync.library.download.list_releases", fake_list_releases)
+    meta = ensure_mod_artifact(
+        store,
+        http,
+        guid="com.yourname.sailwind.sealifeplugin",
+        repo="https://github.com/BryanP-JP19/SailwindSeaLifeMod",
+        version="0.0.1",
+        version_raw="0.0.1",
+    )
+    assert meta.version == "0.0.1"
+    assert meta.version_raw == "0.0.1"
+    assert store.has_mod("com.yourname.sailwind.sealifeplugin", "0.0.1")

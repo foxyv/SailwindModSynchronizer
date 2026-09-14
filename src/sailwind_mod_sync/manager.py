@@ -222,7 +222,7 @@ class Manager:
             except Exception as exc:
                 log.warning("Live update check failed for %s: %s", entry.repo, exc)
                 continue
-            raw = release.tag or release_version(release)
+            raw = release.tag if parse_mod_version(release.tag) else release_version(release) or release.tag
             if not raw:
                 continue
             latest[entry.primary_guid] = raw
@@ -242,7 +242,7 @@ class Manager:
         if progress:
             progress(f"Checking {ref.full_path}…")
         release = fetch_release(self.http, repo, tag=None, paths=self.paths, progress=progress)
-        version_raw = release.tag or release_version(release)
+        version_raw = release.tag if parse_mod_version(release.tag) else release_version(release) or release.tag
         version = parse_mod_version(version_raw)
         assets = [
             asset
@@ -503,7 +503,11 @@ class Manager:
         info = RemoteModInfo()
         try:
             releases = list_releases(self.http, repo, limit=12, progress=progress)
-            tags = [item.tag or item.name for item in releases if item.tag or item.name]
+            tags = [
+                item.tag if parse_mod_version(item.tag) else (item.name or item.tag)
+                for item in releases
+                if item.tag or item.name
+            ]
             info.release_tags = tags
             info.latest_tag = tags[0] if tags else ""
         except Exception as exc:
@@ -564,11 +568,11 @@ class Manager:
         rows: list[tuple[str, str]] = []
         seen: set[str] = set()
         for item in releases:
-            raw = (item.tag or item.name or "").strip()
-            version = parse_mod_version(raw)
+            version = release_version(item)
             if not version or version in seen:
                 continue
             seen.add(version)
+            raw = item.tag if parse_mod_version(item.tag) else (item.name or item.tag)
             rows.append((version, raw))
         return rows
 
