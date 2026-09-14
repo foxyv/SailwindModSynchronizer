@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sailwind_mod_sync.catalog.github import fetch_release, pick_release_asset, release_version
+from sailwind_mod_sync.catalog.github import fetch_release, list_releases, pick_release_asset, release_version
 from sailwind_mod_sync.catalog.thunderstore import download_bepinex_pack, latest_bepinex_version
 from sailwind_mod_sync.constants import DEFAULT_BEPINEX_VERSION
 from sailwind_mod_sync.http_util import HttpClient, ProgressFn
 from sailwind_mod_sync.library.special_mods import artifact_needs_refetch, known_repo_for
 from sailwind_mod_sync.library.store import LibraryStore
-from sailwind_mod_sync.models import ArtifactMeta
+from sailwind_mod_sync.models import ArtifactMeta, parse_mod_version
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def ensure_mod_artifact(
     if progress:
         progress(f"Downloading {asset.name}…")
     http.download(asset.download_url, dest, progress=progress)
-    version_raw = release.tag or remote_version
+    version_raw = release.tag if parse_mod_version(release.tag) else release_version(release) or remote_version
     if asset.name.lower().endswith(".dll"):
         return store.ingest_plugin_paths(
             guid,
@@ -169,4 +169,12 @@ def _fetch_needed_release(http, store, repo, version, version_raw, progress):
         except Exception as exc:
             log.info("No release for %s tag %s: %s", repo, tag, exc)
             last_error = exc
+
+    try:
+        for candidate in list_releases(http, repo, limit=50, progress=progress):
+            if release_version(candidate) == version:
+                log.info("Matched %s version %s to release tag %s", repo, version, candidate.tag)
+                return candidate
+    except Exception as exc:
+        log.info("Could not list releases for %s: %s", repo, exc)
     raise last_error or RuntimeError(f"No GitHub/GitLab release for {repo} {version}")

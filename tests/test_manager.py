@@ -331,6 +331,22 @@ def test_list_remote_mod_versions_skips_unparsed_and_duplicates(paths: AppPaths)
     manager.close()
 
 
+def test_list_remote_mod_versions_extracts_version_from_name(paths: AppPaths) -> None:
+    """A release tagged with a literal word (e.g. "release") whose version
+    only lives in the release name still appears in the version picker.
+    """
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    releases = [
+        RemoteRelease(tag="release", name="0.0.1", assets=[]),
+        RemoteRelease(tag="v1.0.0", name="v1.0.0", assets=[]),
+    ]
+    with patch("sailwind_mod_sync.manager.list_releases", return_value=releases):
+        rows = manager.list_remote_mod_versions("https://github.com/BryanP-JP19/SailwindSeaLifeMod")
+    assert ("0.0.1", "0.0.1") in rows
+    assert ("1.0.0", "v1.0.0") in rows
+    manager.close()
+
+
 def test_set_mod_repo_updates_pack_and_library(paths: AppPaths, tmp_path: Path) -> None:
     manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
     archive = _zip_with(tmp_path / "mod.zip", {"Mod/Mod.dll": b"MZ"})
@@ -526,6 +542,48 @@ def test_add_catalog_repo_is_kept_after_reload(paths: AppPaths, tmp_path: Path, 
     reloaded.remove_catalog_repo("com.example.coolmod")
     assert find_entry(reloaded.catalog, "com.example.coolmod") is None
     reloaded.close()
+
+
+def test_add_catalog_repo_uses_release_name_when_tag_is_not_a_version(
+    paths: AppPaths, tmp_path: Path, monkeypatch
+) -> None:
+    """Release with a non-numeric tag (e.g. "release") and version in the name
+    should still yield an available catalog entry. Regression: https://github.com/foxyv/SailwindModSynchronizer
+    mod BryanP-JP19/SailwindSeaLifeMod was added as "Unavailable" because
+    release.tag ("release") was used verbatim and parse_mod_version returned None.
+    """
+    from sailwind_mod_sync.models import ReleaseAsset, RemoteRelease
+
+    archive = tmp_path / "SeaLifeMod.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "SeaLifeMod/SeaLifeMod.dll",
+            b"MZ" + b"\0" * 16 + b"com.yourname.sailwind.sealifeplugin\0",
+        )
+
+    class _Http(_NoHttp):
+        def download(self, url, dest, progress=None):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(archive.read_bytes())
+
+    def fake_fetch(*args, **kwargs):
+        return RemoteRelease(
+            tag="release",
+            name="0.0.1",
+            assets=[ReleaseAsset("SeaLifeMod.zip", "https://example/SeaLifeMod.zip")],
+        )
+
+    monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", fake_fetch)
+    manager = Manager(paths=paths, config=AppConfig(), http=_Http())
+    entries = manager.add_catalog_repo("https://github.com/BryanP-JP19/SailwindSeaLifeMod")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.primary_guid == "com.yourname.sailwind.sealifeplugin"
+    assert entry.latest_raw == "0.0.1"
+    assert entry.latest_version == "0.0.1"
+    assert entry.available
+    assert entry.repo == "https://github.com/BryanP-JP19/SailwindSeaLifeMod"
+    manager.close()
 
 
 def test_add_catalog_repo_splits_multi_plugin_release(paths: AppPaths, tmp_path: Path, monkeypatch) -> None:
