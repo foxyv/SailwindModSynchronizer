@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
+import subprocess
 
 import pytest
 
@@ -19,6 +20,8 @@ from sailwind_mod_sync.updater import (
     update_check_due,
     utc_now_iso,
     zip_release_dir,
+    _powershell_exe,
+    _write_apply_script,
 )
 
 
@@ -182,13 +185,46 @@ def test_launch_apply_writes_script(tmp_path: Path, monkeypatch) -> None:
     (dest / EXE_NAME).write_bytes(b"old")
     monkeypatch.setattr("sailwind_mod_sync.updater.is_frozen", lambda: True)
     monkeypatch.setattr("sailwind_mod_sync.updater.install_dir", lambda: dest)
-    monkeypatch.setattr("sailwind_mod_sync.updater.subprocess.Popen", MagicMock())
+    popen = MagicMock()
+    monkeypatch.setattr("sailwind_mod_sync.updater.subprocess.Popen", popen)
     script = launch_apply_and_exit(payload, pid=4242)
     text = script.read_text(encoding="utf-8")
-    assert "set PID=4242" in text
+    assert script.suffix == ".ps1"
+    assert "$waitPid = 4242" in text
+    assert "Get-Process" in text
     assert "robocopy" in text
+    assert "find " not in text
+    assert "cmd.exe" not in text
     assert EXE_NAME in text
     assert str(dest) in text
+    args = popen.call_args.args[0]
+    assert args[0].lower().endswith("powershell.exe")
+    assert "-File" in args
+    assert str(script) in args
+    assert "cmd.exe" not in args
+
+
+def test_apply_script_copies_when_pid_already_gone(tmp_path: Path) -> None:
+    src = tmp_path / "payload" / "extracted"
+    src.mkdir(parents=True)
+    (src / EXE_NAME).write_bytes(b"MZ-new")
+    dest = tmp_path / "install"
+    dest.mkdir()
+    (dest / EXE_NAME).write_bytes(b"old")
+    script = _write_apply_script(src, dest, dest / EXE_NAME, pid=9999999)
+    text = script.read_text(encoding="utf-8")
+    script.write_text(text.replace("Start-Process -FilePath $exe -WorkingDirectory $dst", ""), encoding="utf-8")
+    completed = subprocess.run(
+        [_powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode < 8, completed.stderr
+    assert (dest / EXE_NAME).read_bytes() == b"MZ-new"
+    log_text = (src.parent.parent / "apply.log").read_text(encoding="utf-8")
+    assert "Copying files" in log_text
+    assert "robocopy failed" not in log_text
 
 
 def test_launch_apply_requires_frozen(tmp_path: Path, monkeypatch) -> None:

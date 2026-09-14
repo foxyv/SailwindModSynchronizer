@@ -179,18 +179,8 @@ def launch_apply_and_exit(payload: Path, *, pid: int | None = None) -> Path:
     if src == dest or dest in src.parents:
         raise RuntimeError("Update payload overlaps the install folder")
     script = _write_apply_script(src, dest, exe, pid if pid is not None else os.getpid())
-    flags = 0
     if os.name == "nt":
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
-        )
-        creationflags = flags | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-        subprocess.Popen(
-            ["cmd.exe", "/c", str(script)],
-            close_fds=True,
-            creationflags=creationflags,
-            cwd=str(script.parent),
-        )
+        _launch_hidden(script)
     else:
         subprocess.Popen(["sh", str(script)], start_new_session=True)
     log.info("Launched update script %s", script)
@@ -228,43 +218,84 @@ def _trusted_download_url(url: str) -> bool:
     return host.endswith(".githubusercontent.com")
 
 
+def _launch_hidden(script: Path) -> None:
+    powershell = _powershell_exe()
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(
+        subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+    )
+    startupinfo = None
+    if hasattr(subprocess, "STARTUPINFO"):
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+        startupinfo.wShowWindow = 0
+    subprocess.Popen(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            str(script),
+        ],
+        cwd=str(script.parent),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=creationflags,
+        startupinfo=startupinfo,
+    )
+
+
+def _powershell_exe() -> str:
+    root = os.environ.get("SystemRoot") or r"C:\Windows"
+    bundled = Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if bundled.is_file():
+        return str(bundled)
+    return "powershell.exe"
+
+
 def _write_apply_script(src: Path, dest: Path, exe: Path, pid: int) -> Path:
     log_path = src.parent.parent / "apply.log"
-    script = src.parent.parent / "apply_update.bat"
-    src_s = _bat_quote(str(src))
-    dest_s = _bat_quote(str(dest))
-    exe_s = _bat_quote(str(exe))
-    log_s = _bat_quote(str(log_path))
+    script = src.parent.parent / "apply_update.ps1"
+    wait_pid = int(pid)
     script.write_text(
-        "\r\n".join(
+        "\n".join(
             [
-                "@echo off",
-                "setlocal",
-                f"set PID={int(pid)}",
-                f"echo Waiting for process %PID% > {log_s}",
-                ":wait",
-                f'tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul',
-                "if not errorlevel 1 (",
-                "  timeout /t 1 /nobreak >nul",
-                "  goto wait",
-                ")",
-                f"echo Copying files >> {log_s}",
-                f"robocopy {src_s} {dest_s} /E /IS /IT /R:3 /W:1 /NFL /NDL /NJH /NJS",
-                "set RC=%ERRORLEVEL%",
-                "if %RC% GEQ 8 (",
-                f"  echo robocopy failed %RC% >> {log_s}",
-                "  exit /b %RC%",
-                ")",
-                f"echo Starting app >> {log_s}",
-                f"start \"\" {exe_s}",
-                "endlocal",
+                "$ErrorActionPreference = 'Continue'",
+                f"$waitPid = {wait_pid}",
+                f"$src = {_ps_single(str(src))}",
+                f"$dst = {_ps_single(str(dest))}",
+                f"$exe = {_ps_single(str(exe))}",
+                f"$log = {_ps_single(str(log_path))}",
+                "function Write-Log([string] $Message) {",
+                "  Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + ' ' + $Message)",
+                "}",
+                "Write-Log ('Waiting for process ' + $waitPid)",
+                "while (Get-Process -Id $waitPid -ErrorAction SilentlyContinue) {",
+                "  Start-Sleep -Seconds 1",
+                "}",
+                "Start-Sleep -Milliseconds 500",
+                "Write-Log 'Copying files'",
+                "$robocopy = Join-Path $env:SystemRoot 'System32\\robocopy.exe'",
+                "& $robocopy $src $dst /E /IS /IT /R:8 /W:1 /NFL /NDL /NJH /NJS",
+                "$rc = $LASTEXITCODE",
+                "if ($rc -ge 8) {",
+                "  Write-Log ('robocopy failed ' + $rc)",
+                "  exit $rc",
+                "}",
+                "Write-Log 'Starting app'",
+                "Start-Process -FilePath $exe -WorkingDirectory $dst",
+                "Write-Log 'Done'",
             ]
         )
-        + "\r\n",
+        + "\n",
         encoding="utf-8",
     )
     return script
 
 
-def _bat_quote(value: str) -> str:
-    return '"' + value.replace('"', "") + '"'
+def _ps_single(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
