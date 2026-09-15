@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -40,6 +41,7 @@ from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, Associ
 from sailwind_mod_sync.ui.catalog_view import CatalogView
 from sailwind_mod_sync.ui.downloads_window import DownloadsWindow
 from sailwind_mod_sync.ui.hidden_mods_dialog import HiddenModsDialog
+from sailwind_mod_sync.ui.import_plugins_dialog import ImportPluginsDialog
 from sailwind_mod_sync.ui.launch_splash import LaunchSplash
 from sailwind_mod_sync.ui.links import help_text_to_html
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
@@ -630,12 +632,20 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Imported {pack.name}")
 
     def _import_game_plugins(self) -> None:
-        name, ok = QInputDialog.getText(self, "Import game plugins", "ModPack name:", text="Current game")
-        if not ok or not name.strip():
+        game = self.manager.game_dir()
+        default_path = str(game / "BepInEx" / "plugins") if game is not None else ""
+        dialog = ImportPluginsDialog(default_path, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        name = dialog.pack_name()
+        plugins_dir = dialog.plugins_dir()
 
         def work(progress):
-            return self.manager.import_game_plugins(pack_name=name.strip(), progress=progress)
+            return self.manager.import_game_plugins(
+                pack_name=name,
+                plugins_dir=plugins_dir,
+                progress=progress,
+            )
 
         self._run(work, self._game_plugins_imported, "Importing installed plugins…")
 
