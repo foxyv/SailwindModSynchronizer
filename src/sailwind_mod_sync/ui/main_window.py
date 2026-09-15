@@ -1290,9 +1290,7 @@ class MainWindow(QMainWindow):
         self._sailwind_started(proc, pack_id=None, vanilla=True)
 
     def _sailwind_started(self, result: object, pack_id: str | None, *, vanilla: bool = False) -> None:
-        if not isinstance(result, subprocess.Popen):
-            self.statusBar().showMessage("Sailwind launched")
-            return
+        process = result if isinstance(result, subprocess.Popen) else None
         heading = "Starting Sailwind (vanilla)" if vanilla else "Starting Sailwind"
         pack = self.manager.packs.get(pack_id) if pack_id else None
         if pack is not None:
@@ -1307,13 +1305,13 @@ class MainWindow(QMainWindow):
         if previous is not None:
             previous.close()
             previous.deleteLater()
-        splash = LaunchSplash(self, result, heading=heading, log_paths=logs)
+        splash = LaunchSplash(self, process, heading=heading, log_paths=logs)
         self._launch_splash = splash
         splash.finished.connect(lambda _=0: self._launch_splash_closed(splash))
         splash.show()
         splash.raise_()
         splash.activateWindow()
-        self.statusBar().showMessage("Waiting for Sailwind to open…")
+        self.statusBar().showMessage("Waiting for Steam to open Sailwind…")
 
     def _launch_splash_closed(self, splash: LaunchSplash) -> None:
         if self._launch_splash is splash:

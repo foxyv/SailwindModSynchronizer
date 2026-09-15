@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+import pytest
 
 from sailwind_mod_sync.game.bepinex import doorstop_installed, write_doorstop_config
 from sailwind_mod_sync.game.detect import steam_libraries_from_vdf
-from sailwind_mod_sync.game.launch import launch_modded, launch_vanilla
+from sailwind_mod_sync.game.launch import (
+    launch_modded,
+    launch_vanilla,
+    open_steam_launch,
+    steam_launch_uri,
+)
 from sailwind_mod_sync.packs.instance import ensure_instance_bepinex
 
 
@@ -62,25 +70,18 @@ def test_ensure_instance_copies_core(tmp_path: Path) -> None:
     assert (instance / "BepInEx" / "plugins").is_dir()
 
 
-def test_launch_args(tmp_path: Path) -> None:
-    game = tmp_path / "Sailwind"
-    game.mkdir()
-    exe = game / "Sailwind.exe"
-    exe.write_bytes(b"MZ")
-    preloader = tmp_path / "BepInEx.Preloader.dll"
-    preloader.write_bytes(b"MZ")
-    with patch("sailwind_mod_sync.game.launch.subprocess.Popen") as popen:
-        popen.return_value = MagicMock()
-        launch_modded(game, preloader)
-        args = popen.call_args[0][0]
-        assert args[0] == str(exe)
-        assert "--doorstop-enabled" in args
-        assert "--doorstop-target-assembly" in args
-        assert str(preloader) in args
-        assert "--doorstop-mono-dll-search-path-override" not in args
+def test_steam_launch_uri_uses_sailwind_appid() -> None:
+    assert steam_launch_uri() == "steam://rungameid/1764530"
 
 
-def test_launch_modded_sets_dll_search_path(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name != "nt", reason="os.startfile only exists on Windows")
+def test_open_steam_launch_uses_uri_handler() -> None:
+    with patch("sailwind_mod_sync.game.launch.os.startfile") as startfile:
+        open_steam_launch()
+    startfile.assert_called_once_with("steam://rungameid/1764530")
+
+
+def test_launch_modded_opens_steam(tmp_path: Path) -> None:
     game = tmp_path / "Sailwind"
     game.mkdir()
     exe = game / "Sailwind.exe"
@@ -88,23 +89,66 @@ def test_launch_modded_sets_dll_search_path(tmp_path: Path) -> None:
     preloader = tmp_path / "BepInEx.Preloader.dll"
     preloader.write_bytes(b"MZ")
     search = tmp_path / "instance" / "BepInEx" / "plugins" / "SailwindCoop"
-    with patch("sailwind_mod_sync.game.launch.subprocess.Popen") as popen:
-        popen.return_value = MagicMock()
-        launch_modded(game, preloader, dll_search_path=search)
-        args = popen.call_args[0][0]
-        assert "--doorstop-mono-dll-search-path-override" in args
-        assert str(search) in args
+    with patch("sailwind_mod_sync.game.launch.open_steam_launch") as open_steam:
+        result = launch_modded(game, preloader, dll_search_path=search)
+    assert result is None
+    open_steam.assert_called_once()
 
 
-def test_launch_vanilla_disables_doorstop(tmp_path: Path) -> None:
+def test_launch_modded_requires_exe_and_preloader(tmp_path: Path) -> None:
+    game = tmp_path / "Sailwind"
+    game.mkdir()
+    exe = game / "Sailwind.exe"
+    preloader = tmp_path / "BepInEx.Preloader.dll"
+    preloader.write_bytes(b"MZ")
+
+    # Missing game executable.
+    with patch("sailwind_mod_sync.game.launch.open_steam_launch") as open_steam:
+        with pytest.raises(FileNotFoundError):
+            launch_modded(game, preloader)
+        open_steam.assert_not_called()
+
+    # Missing preloader.
+    exe.write_bytes(b"MZ")
+    with patch("sailwind_mod_sync.game.launch.open_steam_launch") as open_steam:
+        with pytest.raises(FileNotFoundError):
+            launch_modded(game, tmp_path / "Missing.Preloader.dll")
+        open_steam.assert_not_called()
+
+
+def test_launch_vanilla_opens_steam(tmp_path: Path) -> None:
     game = tmp_path / "Sailwind"
     game.mkdir()
     exe = game / "Sailwind.exe"
     exe.write_bytes(b"MZ")
-    with patch("sailwind_mod_sync.game.launch.subprocess.Popen") as popen:
-        popen.return_value = MagicMock()
-        launch_vanilla(game)
-        args = popen.call_args[0][0]
-        assert args[0] == str(exe)
-        assert args[1:3] == ["--doorstop-enabled", "false"]
-        assert "--doorstop-target-assembly" not in args
+    with patch("sailwind_mod_sync.game.launch.open_steam_launch") as open_steam:
+        result = launch_vanilla(game)
+    assert result is None
+    open_steam.assert_called_once()
+
+
+def test_launch_vanilla_requires_exe(tmp_path: Path) -> None:
+    game = tmp_path / "Sailwind"
+    game.mkdir()
+    with patch("sailwind_mod_sync.game.launch.open_steam_launch") as open_steam:
+        with pytest.raises(FileNotFoundError):
+            launch_vanilla(game)
+        open_steam.assert_not_called()
+
+
+def test_doorstop_config_disables_doorstop(tmp_path: Path) -> None:
+    game = tmp_path / "Sailwind"
+    game.mkdir()
+    write_doorstop_config(game, None, enabled=False)
+    text = (game / "doorstop_config.ini").read_text(encoding="utf-8")
+    assert "enabled = false" in text
+    assert "target_assembly =" in text
+
+
+def test_doorstop_config_disables_doorstop_without_preloader(tmp_path: Path) -> None:
+    game = tmp_path / "Sailwind"
+    game.mkdir()
+    write_doorstop_config(game, enabled=False)
+    text = (game / "doorstop_config.ini").read_text(encoding="utf-8")
+    assert "enabled = false" in text
+    assert "target_assembly =" in text

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailwind_mod_sync.game.wait_window import process_has_visible_window
+from sailwind_mod_sync.game.wait_window import process_has_visible_window, sailwind_window_visible
 from sailwind_mod_sync.resources import icon_path
 
 POLL_MS = 250
@@ -27,16 +27,21 @@ GIVE_UP_SECONDS = 90
 
 
 class LaunchSplash(QDialog):
-    """Stays visible after Popen until Sailwind shows a window, exits, or the user hides it."""
+    """Stays visible until Sailwind shows a window, exits, or the user hides it.
+
+    ``process`` may be None when the game was handed off to Steam; in that case a
+    desktop-wide window probe recognizes Sailwind instead of tracking a pid.
+    """
 
     def __init__(
         self,
         parent: QWidget | None,
-        process: subprocess.Popen,
+        process: subprocess.Popen | None = None,
         *,
         heading: str,
         log_paths: list[Path] | None = None,
         has_window: Callable[[int], bool] | None = None,
+        window_probe: Callable[[], bool] | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__(parent)
@@ -48,6 +53,7 @@ class LaunchSplash(QDialog):
         self.resize(560, 420)
         self._process = process
         self._has_window = has_window or process_has_visible_window
+        self._window_probe = window_probe or sailwind_window_visible
         self._clock = clock or time.monotonic
         self._started = self._clock()
         self._opened = False
@@ -72,7 +78,10 @@ class LaunchSplash(QDialog):
         self._heading = QLabel(heading)
         self._heading.setStyleSheet("font-size: 16px; font-weight: 600;")
         self._heading.setWordWrap(True)
-        self._status = QLabel("Waiting for the Sailwind window…")
+        self._status = QLabel(
+            "Waiting for the Sailwind window…" if process is not None
+            else "Waiting for Steam to open Sailwind…"
+        )
         self._status.setWordWrap(True)
 
         titles = QVBoxLayout()
@@ -133,18 +142,23 @@ class LaunchSplash(QDialog):
         if self._opened:
             return
         self._read_logs()
-        code = self._process.poll()
-        if code is not None:
-            self._timer.stop()
-            self._bar.setRange(0, 1)
-            self._bar.setValue(1)
-            if code == 0:
-                self.set_status("Sailwind exited before a window appeared.")
-            else:
-                self.set_status(f"Sailwind failed to start (exit code {code}).")
-            return
-        pid = int(getattr(self._process, "pid", 0) or 0)
-        if pid and self._has_window(pid):
+        opened = False
+        if self._process is not None:
+            code = self._process.poll()
+            if code is not None:
+                self._timer.stop()
+                self._bar.setRange(0, 1)
+                self._bar.setValue(1)
+                if code == 0:
+                    self.set_status("Sailwind exited before a window appeared.")
+                else:
+                    self.set_status(f"Sailwind failed to start (exit code {code}).")
+                return
+            pid = int(getattr(self._process, "pid", 0) or 0)
+            opened = bool(pid) and self._has_window(pid)
+        else:
+            opened = self._window_probe()
+        if opened:
             self._opened = True
             self._timer.stop()
             self._bar.setRange(0, 1)

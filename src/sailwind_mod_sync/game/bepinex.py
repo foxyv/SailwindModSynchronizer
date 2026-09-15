@@ -30,14 +30,15 @@ def install_doorstop(
 
 def write_doorstop_config(
     game_dir: Path,
-    preloader: Path | None,
+    preloader: Path | None = None,
     dll_search_path: Path | None = None,
+    enabled: bool = True,
 ) -> None:
     target = str(preloader) if preloader else r"BepInEx\core\BepInEx.Preloader.dll"
     override = str(dll_search_path) if dll_search_path is not None else ""
     content = (
         "[General]\n"
-        "enabled = true\n"
+        f"enabled = {'true' if enabled else 'false'}\n"
         f"target_assembly = {target}\n"
         "redirect_output_log = false\n"
         "ignore_disable_switch = false\n"

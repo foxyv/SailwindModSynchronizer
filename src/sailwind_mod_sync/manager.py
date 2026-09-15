@@ -971,7 +971,8 @@ class Manager:
         game_dir = self.game_dir()
         if game_dir is None:
             raise FileNotFoundError("Sailwind.exe not found. Set the game path in Settings.")
-        log.info("Launching vanilla Sailwind from %s", game_dir)
+        log.info("Launching vanilla Sailwind from %s via Steam", game_dir)
+        write_doorstop_config(game_dir, enabled=False)
         return launch_vanilla(game_dir)
 
     def export_pack(self, pack_id: str, dest: Path, bundle: bool = False) -> Path:

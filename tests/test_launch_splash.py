@@ -84,6 +84,47 @@ def test_launch_splash_closes_when_window_appears() -> None:
     app.processEvents()
 
 
+def test_launch_splash_without_process_uses_window_probe() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = LaunchSplash(None, None, heading="Starting Sailwind", window_probe=lambda: True)
+    try:
+        assert dialog._opened is True
+        assert "Sailwind is open" in dialog._status.text()
+    finally:
+        dialog._timer.stop()
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_launch_splash_without_process_polls_probe() -> None:
+    app = QApplication.instance() or QApplication([])
+    clock = SimpleNamespace(now=0.0)
+
+    def now() -> float:
+        return clock.now
+
+    dialog = LaunchSplash(
+        None,
+        None,
+        heading="Starting Sailwind",
+        window_probe=lambda: False,
+        clock=now,
+    )
+    try:
+        assert dialog._opened is False
+        assert "Waiting for Steam to open Sailwind" in dialog._status.text()
+        clock.now = 120
+        dialog._tick()
+        assert "taking a long time" in dialog._status.text()
+        assert dialog._timer.isActive()
+    finally:
+        dialog._timer.stop()
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
 def test_busy_dialog_still_exists() -> None:
     app = QApplication.instance() or QApplication([])
     dialog = BusyDialog(None, "Working", "Preparing ModPack…")
