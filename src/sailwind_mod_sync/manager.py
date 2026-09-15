@@ -265,7 +265,8 @@ class Manager:
                 if progress:
                     progress(f"Reading {asset.name}…")
                 self.http.download(asset.download_url, dest, progress=progress)
-                discovered.extend(discover_local_file(dest, catalog=self.catalog))
+                hints = (ref.repo, asset.name or "")
+                discovered.extend(discover_local_file(dest, catalog=self.catalog, hints=hints))
         custom = load_custom_catalog(self.paths)
         added: list[CatalogEntry] = []
         seen: set[str] = set()
