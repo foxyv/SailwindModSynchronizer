@@ -17,6 +17,7 @@ class AppConfig:
     last_pack_id: str = ""
     warn_missing_mods: bool = True
     check_for_updates: bool = True
+    auto_scan_mods: bool = True
     last_update_check: str = ""
     skipped_update_version: str = ""
     hidden_catalog_mods: list[str] = field(default_factory=list)
@@ -41,6 +42,7 @@ def load_config(paths: AppPaths) -> AppConfig:
         last_pack_id=str(data.get("last_pack_id") or ""),
         warn_missing_mods=_as_bool(data.get("warn_missing_mods"), True),
         check_for_updates=_as_bool(data.get("check_for_updates"), True),
+        auto_scan_mods=_as_bool(data.get("auto_scan_mods"), True),
         last_update_check=str(data.get("last_update_check") or ""),
         skipped_update_version=str(data.get("skipped_update_version") or ""),
         hidden_catalog_mods=_as_str_list(data.get("hidden_catalog_mods")),

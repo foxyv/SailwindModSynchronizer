@@ -79,6 +79,15 @@ class SettingsDialog(QDialog):
         self.check_updates = QCheckBox("Check GitHub for Sailwind Mod Synchronizer updates")
         self.check_updates.setChecked(config.check_for_updates)
         form.addRow("App updates", self.check_updates)
+        self.auto_scan = QCheckBox("Automatically check for mod updates")
+        self.auto_scan.setToolTip(
+            "Scans your catalog repositories for new releases after startup. "
+            "Requires a GitHub token."
+        )
+        self.auto_scan.setChecked(config.auto_scan_mods)
+        self.auto_scan.setEnabled(bool(config.token()))
+        self.token.textChanged.connect(self._sync_auto_scan_enabled)
+        form.addRow("Mod updates", self.auto_scan)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -99,6 +108,9 @@ class SettingsDialog(QDialog):
         mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
         self.token.setEchoMode(mode)
 
+    def _sync_auto_scan_enabled(self, text: str) -> None:
+        self.auto_scan.setEnabled(bool(text.strip()))
+
     def _open_github_token_page(self) -> None:
         QDesktopServices.openUrl(QUrl(GITHUB_NEW_TOKEN_URL))
 
@@ -113,3 +125,4 @@ class SettingsDialog(QDialog):
         config.github_token = self.token.text().strip()
         config.warn_missing_mods = self.warn_missing.isChecked()
         config.check_for_updates = self.check_updates.isChecked()
+        config.auto_scan_mods = self.auto_scan.isChecked()

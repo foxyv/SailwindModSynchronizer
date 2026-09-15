@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 from pathlib import Path
 import subprocess
+import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QDesktopServices
@@ -62,6 +63,16 @@ from sailwind_mod_sync.updater import (
 
 log = logging.getLogger(__name__)
 
+# Delay after startup before the catalog is scanned in the background for
+# updates, so the window can appear and stay responsive.
+AUTO_SCAN_START_DELAY_MS = 2000
+# If an automatic scan cannot start because another task is busy, retry after
+# this delay instead of dropping the scan.
+AUTO_SCAN_RETRY_DELAY_MS = 10000
+# A manual "scan updates" click within this window after a scan (automatic or
+# manual) just finished asks the user whether they really want to rerun it.
+MOD_SCAN_RECENT_SECONDS = 300.0
+
 PLAY_BUTTON_STYLE = """
 QPushButton {
     background-color: #2e7d32;
@@ -96,6 +107,9 @@ class MainWindow(QMainWindow):
         self._on_ok: Callable | None = None
         self._progress_dialog: BusyDialog | None = None
         self._launch_splash: LaunchSplash | None = None
+        self._mod_scan_running = False
+        self._mod_scan_done_at = float("-inf")
+        self._mod_scan_bridge: TaskBridge | None = None
 
         self.pack_list = QListWidget()
         self.pack_list.currentItemChanged.connect(self._on_pack_selected)
@@ -251,6 +265,7 @@ class MainWindow(QMainWindow):
         if not self.manager.catalog:
             self._refresh_catalog()
         QTimer.singleShot(4000, self._maybe_check_updates)
+        QTimer.singleShot(AUTO_SCAN_START_DELAY_MS, self._maybe_auto_scan_mods)
 
     def current_pack_id(self) -> str | None:
         item = self.pack_list.currentItem()
@@ -874,7 +889,74 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _scan_updates(self) -> None:
+        if self._mod_scan_running:
+            QMessageBox.information(
+                self,
+                "Scan in progress",
+                "A mod update scan is already running. Please wait for it to finish.",
+            )
+            return
+        if time.monotonic() - self._mod_scan_done_at < MOD_SCAN_RECENT_SECONDS:
+            answer = QMessageBox.question(
+                self,
+                "Scan again?",
+                "A mod update scan just finished. Do you still want to run it again?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._run(lambda progress: self.manager.scan_updates(live=True, progress=progress), self._updates_scanned, "Scanning repositories…")
+
+    def _maybe_auto_scan_mods(self) -> None:
+        """Kick off a quiet background mod-update scan after startup."""
+        if not self.manager.config.auto_scan_mods:
+            return
+        if not self.manager.config.token():
+            log.info("Skipping automatic mod update scan: no GitHub token configured")
+            return
+        if self._busy or self._mod_scan_running:
+            log.info("Deferring automatic mod update scan: another task is running")
+            QTimer.singleShot(AUTO_SCAN_RETRY_DELAY_MS, self._maybe_auto_scan_mods)
+            return
+        log.info("Starting background mod update scan")
+        self._start_background_mod_scan()
+
+    def _start_background_mod_scan(self) -> None:
+        if self._mod_scan_running or self._busy:
+            return
+        self._mod_scan_running = True
+        self.statusBar().showMessage("Scanning repositories for updates…")
+        bridge = TaskBridge(self)
+        self._mod_scan_bridge = bridge
+        queued = Qt.ConnectionType.QueuedConnection
+        bridge.finished.connect(self._mod_scan_finished, queued)
+        bridge.failed.connect(self._mod_scan_failed, queued)
+        work = lambda progress: self.manager.scan_updates(live=True, progress=progress)
+        QTimer.singleShot(0, lambda: run_background(work, bridge))
+
+    def _clear_mod_scan(self) -> None:
+        self._mod_scan_running = False
+        self._mod_scan_done_at = time.monotonic()
+        if self._mod_scan_bridge is not None:
+            self._mod_scan_bridge.deleteLater()
+            self._mod_scan_bridge = None
+
+    def _mod_scan_finished(self, _result) -> None:
+        self._clear_mod_scan()
+        self._reload_views()
+        self.statusBar().showMessage("Update scan complete")
+
+    def _mod_scan_failed(self, message: str) -> None:
+        self._clear_mod_scan()
+        text = (message or "").strip() or "The task failed."
+        if text.startswith("TokenAuthError: "):
+            detail = text.removeprefix("TokenAuthError: ")
+            log.error("Mod update scan rejected token: %s", detail)
+            QMessageBox.warning(self, "Invalid GitHub token", detail)
+            self.statusBar().showMessage("Update scan skipped: invalid GitHub token")
+        else:
+            log.error("Background mod scan failed: %s", text)
+            self.statusBar().showMessage(text)
+        self._reload_views()
 
     def _updates_scanned(self, _result) -> None:
         self._reload_views()
