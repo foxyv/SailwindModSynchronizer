@@ -37,6 +37,7 @@ from sailwind_mod_sync.packs.share import DISCORD_MESSAGE_LIMIT, parse_share_tex
 from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, AssociateTarget
 from sailwind_mod_sync.ui.catalog_view import CatalogView
 from sailwind_mod_sync.ui.downloads_window import DownloadsWindow
+from sailwind_mod_sync.ui.hidden_mods_dialog import HiddenModsDialog
 from sailwind_mod_sync.ui.launch_splash import LaunchSplash
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
 from sailwind_mod_sync.ui.missing_mods_dialog import MissingModsWarningDialog
@@ -158,7 +159,9 @@ class MainWindow(QMainWindow):
         self.pack_view.toggle_enabled.connect(self._toggle_mod)
         self.pack_view.update_requested.connect(self._update_mod)
         self.pack_view.import_requested.connect(self._import_missing_mod)
+        self.pack_view.import_file_clicked.connect(self._import_local_mod)
         self.pack_view.find_repo_requested.connect(self._find_pack_repo)
+        self.pack_view.show_in_catalog_requested.connect(self._find_library_in_catalog)
         self.pack_view.remove_requested.connect(self._remove_mod)
         self.pack_view.version_requested.connect(self._set_pack_mod_version)
         self.pack_view.browse_versions_requested.connect(self._browse_pack_mod_versions)
@@ -166,6 +169,7 @@ class MainWindow(QMainWindow):
         self.catalog_view.refresh_clicked.connect(self._refresh_catalog)
         self.catalog_view.add_repo_clicked.connect(self._add_catalog_repo)
         self.catalog_view.remove_custom_requested.connect(self._remove_custom_catalog)
+        self.catalog_view.hide_requested.connect(self._hide_catalog_mod)
         self.catalog_view.details_requested.connect(self._show_catalog_details)
         self.library_view.add_to_pack_requested.connect(self._add_library_mod)
         self.library_view.find_repo_requested.connect(self._find_library_repo)
@@ -225,6 +229,12 @@ class MainWindow(QMainWindow):
         scan_action = downloads_menu.addAction("Scan updates")
         scan_action.setStatusTip("Check GitHub and GitLab for newer catalog versions")
         scan_action.triggered.connect(self._scan_updates)
+        open_appdata = downloads_menu.addAction("Open AppData")
+        open_appdata.setStatusTip("Open the Sailwind Mod Synchronizer data folder in File Explorer")
+        open_appdata.triggered.connect(self._open_appdata)
+        hidden_mods = downloads_menu.addAction("Hidden Mods")
+        hidden_mods.setStatusTip("Show catalog mods you hid, and unhide them")
+        hidden_mods.triggered.connect(self._manage_hidden_mods)
         help_menu = self.menuBar().addMenu("Help")
         check_updates = help_menu.addAction("Check for updates…")
         check_updates.triggered.connect(self._check_for_updates)
@@ -298,7 +308,7 @@ class MainWindow(QMainWindow):
                     ),
                 )
         self.pack_view.set_pack(pack, self.manager.catalog, missing, library_version_rows, display_names)
-        self.catalog_view.set_data(self.manager.catalog, pack)
+        self.catalog_view.set_data(self.manager.catalog, pack, self.manager.config.hidden_catalog_mods)
         self.library_view.set_entries(library, pack, display_names)
         game = self.manager.game_dir()
         if game:
@@ -829,6 +839,25 @@ class MainWindow(QMainWindow):
         self._reload_views()
         self.statusBar().showMessage(f"Removed {guid} from the catalog")
 
+    def _hide_catalog_mod(self, guid: str) -> None:
+        self.manager.hide_catalog_mod(guid)
+        self._reload_views()
+        self.statusBar().showMessage(f"Hidden {guid} from the catalog")
+
+    def _unhide_catalog_mod(self, guid: str) -> None:
+        self.manager.unhide_catalog_mod(guid)
+        self._reload_views()
+        self.statusBar().showMessage(f"Showing {guid} in the catalog")
+
+    def _manage_hidden_mods(self) -> None:
+        rows: list[tuple[str, str]] = []
+        for guid in self.manager.config.hidden_catalog_mods:
+            entry = find_entry(self.manager.catalog, guid)
+            rows.append((guid, entry.name if entry else guid))
+        dialog = HiddenModsDialog(rows, self)
+        dialog.unhide_requested.connect(self._unhide_catalog_mod)
+        dialog.exec()
+
     def _scan_updates(self) -> None:
         self._run(lambda progress: self.manager.scan_updates(live=True, progress=progress), self._updates_scanned, "Scanning repositories…")
 
@@ -1095,10 +1124,16 @@ class MainWindow(QMainWindow):
 
     def _find_library_in_catalog(self, guid: str) -> None:
         repo = ""
-        for entry in self.manager.library.list_mods():
-            if entry.guid == guid:
-                repo = entry.meta.repo
-                break
+        pack_id = self.current_pack_id()
+        pack = self.manager.packs.get(pack_id) if pack_id else None
+        pinned = pack.find_mod(guid) if pack else None
+        if pinned and pinned.repo:
+            repo = pinned.repo
+        if not repo:
+            for entry in self.manager.library.list_mods():
+                if entry.guid == guid:
+                    repo = entry.meta.repo
+                    break
         catalog_entry = find_entry(self.manager.catalog, guid)
         if catalog_entry is None and repo:
             catalog_entry = next(
@@ -1109,9 +1144,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Not in catalog",
-                f"{guid} is not in the catalog. Use Associate to link it to a GitHub repository.",
+                f"{guid} is not in the catalog. Use Add Repository to link it to a GitHub repository.",
             )
             return
+        self.manager.unhide_catalog_mod(catalog_entry.primary_guid)
+        self._reload_views()
         self.tabs.setCurrentWidget(self.catalog_view)
         self.raise_()
         self.activateWindow()
@@ -1121,7 +1158,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Not in catalog",
-            f"{guid} is not in the catalog. Use Associate to link it to a GitHub repository.",
+            f"{guid} is not in the catalog. Use Add Repository to link it to a GitHub repository.",
         )
 
     def _show_catalog_details(self, guid: str) -> None:
@@ -1316,6 +1353,14 @@ class MainWindow(QMainWindow):
         self._downloads.show()
         self._downloads.raise_()
         self._downloads.activateWindow()
+
+    def _open_appdata(self) -> None:
+        self.manager.paths.ensure()
+        folder = self.manager.paths.root
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            QMessageBox.warning(self, "Open AppData", f"Could not open {folder}")
+            return
+        self.statusBar().showMessage(f"Opened {folder}")
 
     def _set_views_enabled(self, enabled: bool) -> None:
         self.catalog_view.setEnabled(enabled)

@@ -142,7 +142,7 @@ class SelectVersionDialog(QDialog):
             )
         hint.setWordWrap(True)
 
-        self.status = QLabel("" if repo else "No repository URL. Use Associate to download other releases.")
+        self.status = QLabel("" if repo else "No repository URL. Use Add Repository to download other releases.")
         self.status.setWordWrap(True)
 
         self.list = QListWidget()

@@ -6,14 +6,17 @@ Usage (from the repo root, with the project venv active):
     python scripts/build.py --release
     python scripts/build.py --skip-shortcut
     python scripts/build.py --console
+    python scripts/build.py --release --skip-sign
 
 Default is an incremental freeze: reuse the PyInstaller cache, skip UPX, and skip
-the GitHub zip. Pass --release for a clean freeze and a versioned zip.
+the GitHub zip. Pass --release for a clean freeze, Azure Authenticode signing, and
+a versioned zip. Use --skip-sign for an unsigned zip.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -28,6 +31,11 @@ ICO_ICON = ASSETS / "icon.ico"
 EXE_NAME = "SailwindModSynchronizer"
 SHORTCUT_NAME = "Sailwind Mod Synchronizer.lnk"
 DIST_DIR = REPO_ROOT / "dist" / EXE_NAME
+SIGN_EXTENSIONS = {".exe", ".dll", ".pyd"}
+SIGN_BATCH = 16
+MIN_SIGNTOOL_VERSION = (10, 0, 22621)
+UNSUPPORTED_SIGNTOOL_VERSIONS = {(10, 0, 20348)}
+TIMESTAMP_URL = "http://timestamp.acs.microsoft.com"
 
 QT_EXCLUDES = [
     "tkinter",
@@ -81,7 +89,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--skip-shortcut", action="store_true", help="Do not create a Desktop shortcut.")
     parser.add_argument("--console", action="store_true", help="Show a console window (useful for debugging).")
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--sign",
+        action="store_true",
+        help="Sign freeze output with Azure Artifact Signing (implied by --release).",
+    )
+    parser.add_argument(
+        "--skip-sign",
+        action="store_true",
+        help="Do not Authenticode-sign the freeze output.",
+    )
+    args = parser.parse_args(argv)
+    if args.sign and args.skip_sign:
+        parser.error("use only one of --sign and --skip-sign")
+    if args.release and not args.skip_sign:
+        args.sign = True
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,6 +127,9 @@ def main(argv: list[str] | None = None) -> int:
 
     shutil.copy2(ICO_ICON, DIST_DIR / "icon.ico")
     print(f"Built {exe}")
+
+    if args.sign:
+        sign_dist(DIST_DIR, exe)
 
     if args.release:
         version = _app_version()
@@ -159,6 +185,208 @@ def zip_dist(source: Path, dest: Path) -> Path:
             if path.is_file():
                 archive.write(path, path.relative_to(source).as_posix())
     return dest
+
+
+def default_signing_metadata_path() -> Path:
+    override = os.environ.get("SMS_SIGNING_METADATA", "").strip()
+    if override:
+        return Path(override).expanduser()
+    profile = os.environ.get("USERPROFILE") or str(Path.home())
+    return Path(profile) / "sms-signing" / "metadata.json"
+
+
+def load_signing_metadata(path: Path) -> dict:
+    if not path.is_file():
+        raise SystemExit(
+            "Azure Artifact Signing metadata not found.\n"
+            f"  Expected: {path}\n"
+            "Create that JSON file (see scripts/signing.metadata.example.json), or set "
+            "SMS_SIGNING_METADATA, or pass --skip-sign for an unsigned zip."
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid signing metadata JSON at {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"Signing metadata must be a JSON object: {path}")
+    required = ("Endpoint", "CodeSigningAccountName", "CertificateProfileName")
+    missing = [key for key in required if not str(data.get(key) or "").strip()]
+    if missing:
+        raise SystemExit(f"Signing metadata at {path} is missing: {', '.join(missing)}")
+    return data
+
+
+def kit_version_tuple(folder_name: str) -> tuple[int, int, int] | None:
+    parts = folder_name.split(".")
+    if len(parts) < 3:
+        return None
+    try:
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
+def find_signtool() -> Path:
+    override = os.environ.get("SMS_SIGNTOOL", "").strip()
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            raise SystemExit(f"SMS_SIGNTOOL is set but not a file: {path}")
+        return path
+    kits = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Windows Kits" / "10" / "bin"
+    found: list[tuple[tuple[int, int, int], Path]] = []
+    if kits.is_dir():
+        for child in kits.iterdir():
+            version = kit_version_tuple(child.name)
+            if version is None:
+                continue
+            if version in UNSUPPORTED_SIGNTOOL_VERSIONS or version < MIN_SIGNTOOL_VERSION:
+                continue
+            candidate = child / "x64" / "signtool.exe"
+            if candidate.is_file():
+                found.append((version, candidate))
+    if found:
+        found.sort()
+        return found[-1][1]
+    which = shutil.which("signtool")
+    if which:
+        return Path(which)
+    raise SystemExit(
+        "signtool.exe not found. Install the Windows SDK (10.0.22621 or later, not 10.0.20348) "
+        "or Artifact Signing Client Tools, or set SMS_SIGNTOOL."
+    )
+
+
+def _dlib_search_roots() -> list[Path]:
+    roots: list[Path] = []
+    override = os.environ.get("SMS_SIGNING_DLIB", "").strip()
+    if override:
+        roots.append(Path(override))
+    program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+    local_app = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    roots.extend(
+        [
+            program_files / "Microsoft Artifact Signing Client Tools",
+            program_files / "Azure Artifact Signing Client Tools",
+            program_files / "Microsoft Azure Artifact Signing Client Tools",
+            program_files_x86 / "Microsoft Artifact Signing Client Tools",
+            local_app / "Microsoft" / "MicrosoftArtifactSigningClientTools",
+            Path.home() / ".nuget" / "packages" / "microsoft.artifactsigning.client",
+            Path.home() / ".nuget" / "packages" / "microsoft.trusted.signing.client",
+            local_app / "Microsoft" / "WinGet" / "Packages",
+        ]
+    )
+    return roots
+
+
+def find_signing_dlib() -> Path:
+    override = os.environ.get("SMS_SIGNING_DLIB", "").strip()
+    if override:
+        path = Path(override)
+        if path.is_file():
+            return path
+        nested = path / "x64" / "Azure.CodeSigning.Dlib.dll"
+        if nested.is_file():
+            return nested
+        nested = path / "Azure.CodeSigning.Dlib.dll"
+        if nested.is_file():
+            return nested
+    for root in _dlib_search_roots():
+        if not root.exists():
+            continue
+        if root.is_file() and root.name.lower() == "azure.codesigning.dlib.dll":
+            return root
+        for relative in (
+            Path("Azure.CodeSigning.Dlib.dll"),
+            Path("bin") / "x64" / "Azure.CodeSigning.Dlib.dll",
+            Path("x64") / "Azure.CodeSigning.Dlib.dll",
+        ):
+            direct = root / relative
+            if direct.is_file():
+                return direct
+        if root.is_dir():
+            children = [root]
+            if root.name.lower() == "packages" and "winget" in str(root).lower():
+                children = [
+                    child
+                    for child in root.iterdir()
+                    if child.is_dir()
+                    and ("artifactsigning" in child.name.lower() or "trusted.signing" in child.name.lower())
+                ]
+            for child in children:
+                matches = sorted(
+                    path
+                    for path in child.rglob("Azure.CodeSigning.Dlib.dll")
+                    if path.name.lower() == "azure.codesigning.dlib.dll"
+                )
+                if matches:
+                    return matches[-1]
+    raise SystemExit(
+        "Azure.CodeSigning.Dlib.dll not found. Install with:\n"
+        "  winget install -e --id Microsoft.Azure.ArtifactSigningClientTools\n"
+        "or set SMS_SIGNING_DLIB to the x64 dlib path."
+    )
+
+
+def binaries_to_sign(dist_dir: Path) -> list[Path]:
+    files = [
+        path
+        for path in sorted(dist_dir.rglob("*"))
+        if path.is_file() and path.suffix.lower() in SIGN_EXTENSIONS
+    ]
+    if not files:
+        raise SystemExit(f"No .exe/.dll/.pyd files to sign in {dist_dir}")
+    return files
+
+
+def sign_files(signtool: Path, dlib: Path, metadata: Path, files: list[Path]) -> None:
+    for index in range(0, len(files), SIGN_BATCH):
+        batch = files[index : index + SIGN_BATCH]
+        cmd = [
+            str(signtool),
+            "sign",
+            "/fd",
+            "SHA256",
+            "/tr",
+            TIMESTAMP_URL,
+            "/td",
+            "SHA256",
+            "/dlib",
+            str(dlib),
+            "/dmdf",
+            str(metadata),
+            *[str(path) for path in batch],
+        ]
+        print(f"Signing {len(batch)} file(s) ({index + 1}-{index + len(batch)} of {len(files)})…")
+        subprocess.check_call(cmd)
+
+
+def sign_dist(dist_dir: Path, exe: Path) -> None:
+    if os.name != "nt":
+        raise SystemExit("Authenticode signing is only supported on Windows.")
+    metadata = default_signing_metadata_path()
+    load_signing_metadata(metadata)
+    signtool = find_signtool()
+    dlib = find_signing_dlib()
+    files = binaries_to_sign(dist_dir)
+    print(f"Signing {len(files)} binaries with Azure Artifact Signing")
+    print(f"  metadata: {metadata}")
+    print(f"  signtool: {signtool}")
+    print(f"  dlib:     {dlib}")
+    print("If a browser or az login prompt appears, finish it with the account that has")
+    print("the Artifact Signing Certificate Profile Signer role.")
+    try:
+        sign_files(signtool, dlib, metadata, files)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            f"signtool failed with exit code {exc.returncode}.\n"
+            "Check az login, the Certificate Profile Signer role, and that Endpoint "
+            "in metadata.json matches the Artifact Signing account region."
+        ) from exc
+    if not exe.is_file():
+        raise SystemExit(f"Signed exe missing: {exe}")
+    print(f"Signed {exe}")
 
 
 def pyinstaller_args(*, windowed: bool, clean: bool) -> list[str]:

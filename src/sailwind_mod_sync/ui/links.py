@@ -11,7 +11,7 @@ from sailwind_mod_sync.catalog.github import repo_page_url
 
 def repo_button(repo: str, parent: QWidget | None = None) -> QPushButton:
     page = repo_page_url(repo)
-    label = "GitLab" if page and "gitlab.com" in page.lower() else "GitHub"
+    label = "Open GitLab in Browser" if page and "gitlab.com" in page.lower() else "Open GitHub in Browser"
     button = QPushButton(label, parent)
     if not page:
         button.setEnabled(False)
@@ -30,7 +30,7 @@ def repo_or_find_button(
     page = repo_page_url(repo)
     if page:
         return repo_button(repo, parent)
-    button = QPushButton("Associate", parent)
-    button.setToolTip("Link this local plugin to a GitHub catalog entry, or paste a repository URL")
+    button = QPushButton("Add Repository", parent)
+    button.setToolTip("Add a GitHub or GitLab repository URL, or pick a catalog entry")
     button.clicked.connect(lambda _=False: on_find())
     return button

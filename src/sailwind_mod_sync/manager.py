@@ -324,6 +324,22 @@ class Manager:
         self.catalog = merge_with_custom(load_shared_catalog(self.paths), custom)
         log.info("Removed custom catalog entry %s", guid)
 
+    def hide_catalog_mod(self, guid: str) -> None:
+        text = guid.strip()
+        if not text or text in self.config.hidden_catalog_mods:
+            return
+        self.config.hidden_catalog_mods.append(text)
+        self.save_config()
+        log.info("Hidden catalog mod %s", text)
+
+    def unhide_catalog_mod(self, guid: str) -> None:
+        hidden = [item for item in self.config.hidden_catalog_mods if item != guid]
+        if hidden == self.config.hidden_catalog_mods:
+            return
+        self.config.hidden_catalog_mods = hidden
+        self.save_config()
+        log.info("Unhid catalog mod %s", guid)
+
     def ensure_catalog_mods(self, mods: list[PinnedMod]) -> list[CatalogEntry]:
         if not self.catalog:
             self.catalog = load_cached_catalog(self.paths) or []

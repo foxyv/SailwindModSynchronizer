@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from sailwind_mod_sync.constants import CONFIG_FILENAME
@@ -19,6 +19,7 @@ class AppConfig:
     check_for_updates: bool = True
     last_update_check: str = ""
     skipped_update_version: str = ""
+    hidden_catalog_mods: list[str] = field(default_factory=list)
 
     def token(self) -> str:
         return self.github_token.strip() or os.environ.get("GITHUB_TOKEN", "").strip()
@@ -42,6 +43,7 @@ def load_config(paths: AppPaths) -> AppConfig:
         check_for_updates=_as_bool(data.get("check_for_updates"), True),
         last_update_check=str(data.get("last_update_check") or ""),
         skipped_update_version=str(data.get("skipped_update_version") or ""),
+        hidden_catalog_mods=_as_str_list(data.get("hidden_catalog_mods")),
     )
 
 
@@ -65,6 +67,20 @@ def _atomic_write_json(path: Path, payload: object) -> None:
         except OSError:
             pass
         raise
+
+
+def _as_str_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        text = str(entry).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items
 
 
 def _as_bool(value: object, default: bool) -> bool:

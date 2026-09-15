@@ -1,3 +1,3 @@
 """Sailwind Mod Synchronizer — desktop mod manager."""
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"

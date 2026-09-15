@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -13,8 +15,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sailwind_mod_sync.catalog.custom import same_repo
+from sailwind_mod_sync.catalog.github import repo_page_url
 from sailwind_mod_sync.models import CatalogEntry, ModPack, PinnedMod, is_newer
-from sailwind_mod_sync.ui.links import repo_or_find_button
 from sailwind_mod_sync.ui.tables import (
     enable_column_resize,
     enable_column_sort,
@@ -34,7 +37,9 @@ class PackView(QWidget):
     toggle_enabled = Signal(str, bool)
     update_requested = Signal(str)
     import_requested = Signal(str)
+    import_file_clicked = Signal()
     find_repo_requested = Signal(str)
+    show_in_catalog_requested = Signal(str)
     remove_requested = Signal(str)
     version_requested = Signal(str, str, str)
     browse_versions_requested = Signal(str)
@@ -43,16 +48,29 @@ class PackView(QWidget):
         super().__init__(parent)
         self.title = QLabel("No pack selected")
         self.subtitle = QLabel("")
+        self.import_file = QPushButton("Import Mod DLL/ZIP")
+        self.import_file.setToolTip("Import a .dll or .zip into the library and add it to this pack")
+        self.import_file.setEnabled(False)
+        self.import_file.clicked.connect(self.import_file_clicked.emit)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["On", "Mod", "GUID", "Version", "Latest", ""])
-        enable_column_resize(self.table, [48, 180, 220, 140, 110, 360])
+        enable_column_resize(self.table, [48, 180, 220, 140, 110, 220])
         enable_column_sort(self.table, default_column=None)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
+        self._row_state: dict[str, tuple[str, bool, bool, bool]] = {}
+
+        header = QHBoxLayout()
+        titles = QVBoxLayout()
+        titles.addWidget(self.title)
+        titles.addWidget(self.subtitle)
+        header.addLayout(titles, 1)
+        header.addWidget(self.import_file)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.title)
-        layout.addWidget(self.subtitle)
+        layout.addLayout(header)
         layout.addWidget(self.table)
 
     def set_pack(
@@ -66,17 +84,23 @@ class PackView(QWidget):
         if pack is None:
             self.title.setText("No pack selected")
             self.subtitle.setText("")
+            self.import_file.setEnabled(False)
+            self._row_state = {}
             with sorting_paused(self.table):
                 self.table.setRowCount(0)
             return
+        self.import_file.setEnabled(True)
         missing = missing_guids or set()
         versions = library_versions or {}
         latest_by_guid = {}
         latest_version_by_guid = {}
         names = {}
         repo_by_guid = {}
+        catalog_guids: set[str] = set()
         for entry in catalog:
             names[entry.primary_guid] = entry.name
+            catalog_guids.add(entry.primary_guid)
+            catalog_guids.update(entry.guids)
             for guid in entry.guids:
                 latest_by_guid[guid] = entry.latest_raw or ""
                 latest_version_by_guid[guid] = entry.latest_version
@@ -88,6 +112,7 @@ class PackView(QWidget):
         if missing_count:
             subtitle += f" · {missing_count} missing"
         self.subtitle.setText(subtitle)
+        self._row_state = {}
         with sorting_paused(self.table):
             self.table.setRowCount(len(pack.mods))
             for index, pinned in enumerate(pack.mods):
@@ -100,6 +125,7 @@ class PackView(QWidget):
                 wrap_layout.setContentsMargins(8, 0, 0, 0)
                 wrap_layout.addWidget(checkbox)
                 wrap_layout.addStretch()
+                self._enable_row_context_menu(wrap, guid)
                 self.table.setItem(index, 0, sortable_item("", 1 if pinned.enabled else 0))
                 self.table.setCellWidget(index, 0, wrap)
 
@@ -107,26 +133,30 @@ class PackView(QWidget):
                 self.table.setItem(index, 1, sortable_item(name))
                 self.table.setItem(index, 2, sortable_item(pinned.guid))
                 self.table.setItem(index, 3, sortable_item(pinned.version_raw or pinned.version, version_sort_key(pinned.version)))
-                self.table.setCellWidget(
-                    index,
-                    3,
-                    self._version_combo(
-                        pinned,
-                        versions.get(guid, []),
-                        catalog_latest_raw=latest_by_guid.get(guid, ""),
-                        catalog_latest_version=latest_version_by_guid.get(guid),
-                        has_repo=bool(pinned.repo or repo_by_guid.get(guid, "")),
-                        missing=guid in missing,
-                    ),
+                version_combo = self._version_combo(
+                    pinned,
+                    versions.get(guid, []),
+                    catalog_latest_raw=latest_by_guid.get(guid, ""),
+                    catalog_latest_version=latest_version_by_guid.get(guid),
+                    has_repo=bool(pinned.repo or repo_by_guid.get(guid, "")),
+                    missing=guid in missing,
                 )
+                self._enable_row_context_menu(version_combo, guid)
+                self.table.setCellWidget(index, 3, version_combo)
                 latest = latest_by_guid.get(pinned.guid, "")
                 is_missing = guid in missing
+                can_update = bool(latest and is_newer(latest, pinned.version))
+                repo = pinned.repo or repo_by_guid.get(guid, "")
+                in_catalog = guid in catalog_guids or any(
+                    same_repo(entry.repo, repo) for entry in catalog if repo
+                )
+                self._row_state[guid] = (repo, is_missing, can_update, in_catalog)
                 latest_label = "Missing" if is_missing else latest
                 latest_key = (1, version_sort_key(None)) if is_missing else (0, version_sort_key(latest))
                 latest_item = sortable_item(latest_label, latest_key)
                 if is_missing:
                     latest_item.setToolTip("This version is not in the library. Import a .dll or .zip to add it.")
-                elif latest and is_newer(latest, pinned.version):
+                elif can_update:
                     latest_item.setText(f"{latest} (update)")
                 self.table.setItem(index, 4, latest_item)
                 self.table.setItem(index, 5, sortable_item(""))
@@ -134,13 +164,6 @@ class PackView(QWidget):
                 actions = QWidget()
                 actions_layout = QHBoxLayout(actions)
                 actions_layout.setContentsMargins(4, 0, 4, 0)
-                actions_layout.addWidget(
-                    repo_or_find_button(
-                        pinned.repo or repo_by_guid.get(guid, ""),
-                        actions,
-                        lambda value=guid: self.find_repo_requested.emit(value),
-                    )
-                )
                 if is_missing:
                     import_btn = QPushButton("Import")
                     import_btn.setToolTip("Import a .dll or .zip for this missing mod")
@@ -148,12 +171,13 @@ class PackView(QWidget):
                     actions_layout.addWidget(import_btn)
                 else:
                     update_btn = QPushButton("Update")
-                    update_btn.setEnabled(bool(latest and is_newer(latest, pinned.version)))
+                    update_btn.setEnabled(can_update)
                     update_btn.clicked.connect(lambda _=False, value=guid: self.update_requested.emit(value))
                     actions_layout.addWidget(update_btn)
                 remove_btn = QPushButton("Remove")
                 remove_btn.clicked.connect(lambda _=False, value=guid: self.remove_requested.emit(value))
                 actions_layout.addWidget(remove_btn)
+                self._enable_row_context_menu(actions, guid)
                 self.table.setCellWidget(index, 5, actions)
 
     def _version_combo(
@@ -216,3 +240,54 @@ class PackView(QWidget):
                 combo.setCurrentIndex(index)
                 break
         combo.blockSignals(False)
+
+    def _enable_row_context_menu(self, widget: QWidget, guid: str) -> None:
+        widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        widget.customContextMenuRequested.connect(
+            lambda pos, value=guid, host=widget: self._popup_menu_for_guid(value, host.mapToGlobal(pos))
+        )
+
+    def _show_table_context_menu(self, pos) -> None:
+        row = self.table.indexAt(pos).row()
+        item = self.table.item(row, 2)
+        if item is None:
+            return
+        self.table.selectRow(row)
+        self._popup_menu_for_guid(item.text(), self.table.viewport().mapToGlobal(pos))
+
+    def _popup_menu_for_guid(self, guid: str, global_pos) -> None:
+        menu = self._menu_for_guid(guid)
+        if menu is None:
+            return
+        menu.exec(global_pos)
+
+    def _menu_for_guid(self, guid: str) -> QMenu | None:
+        state = self._row_state.get(guid)
+        if state is None:
+            return None
+        repo, missing, can_update, in_catalog = state
+        menu = QMenu(self)
+        page = repo_page_url(repo)
+        if page:
+            label = "Open GitLab in Browser" if "gitlab.com" in page.lower() else "Open GitHub in Browser"
+            open_repo = menu.addAction(label)
+            open_repo.setToolTip(page)
+            open_repo.triggered.connect(lambda _=False, url=page: QDesktopServices.openUrl(QUrl(url)))
+        else:
+            add_repo = menu.addAction("Add Repository")
+            add_repo.triggered.connect(lambda _=False, value=guid: self.find_repo_requested.emit(value))
+        if in_catalog:
+            show_catalog = menu.addAction("Show in Catalog")
+            show_catalog.triggered.connect(
+                lambda _=False, value=guid: self.show_in_catalog_requested.emit(value)
+            )
+        menu.addSeparator()
+        if missing:
+            import_action = menu.addAction("Import")
+            import_action.triggered.connect(lambda _=False, value=guid: self.import_requested.emit(value))
+        else:
+            update_action = menu.addAction("Update")
+            update_action.setEnabled(can_update)
+            update_action.triggered.connect(lambda _=False, value=guid: self.update_requested.emit(value))
+        menu.addAction("Remove").triggered.connect(lambda _=False, value=guid: self.remove_requested.emit(value))
+        return menu

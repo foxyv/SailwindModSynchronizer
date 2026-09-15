@@ -2,7 +2,9 @@
 param(
     [switch]$SkipShortcut,
     [switch]$Console,
-    [switch]$Release
+    [switch]$Release,
+    [switch]$Sign,
+    [switch]$SkipSign
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +20,8 @@ $buildArgs = @("scripts\build.py")
 if ($Release) { $buildArgs += "--release" }
 if ($SkipShortcut) { $buildArgs += "--skip-shortcut" }
 if ($Console) { $buildArgs += "--console" }
+if ($Sign) { $buildArgs += "--sign" }
+if ($SkipSign) { $buildArgs += "--skip-sign" }
 
 if ($python -eq "py") {
     & py -3 @buildArgs

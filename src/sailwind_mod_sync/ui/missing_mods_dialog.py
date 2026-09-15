@@ -27,7 +27,7 @@ class MissingModsWarningDialog(QDialog):
         where = f" in {pack_name}" if pack_name else ""
         intro = QLabel(
             f"This pack{where} has {count} missing {noun}. "
-            "Those plugins will not load. Import a file or Associate on the Pack tab, "
+            "Those plugins will not load. Import a file or Add Repository on the Pack tab, "
             "or continue without them."
         )
         intro.setWordWrap(True)

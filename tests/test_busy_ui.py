@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -21,6 +23,7 @@ from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
 from sailwind_mod_sync.ui.update_dialog import OPEN, SKIP, UPDATE, UpdateDialog
 from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, AssociateTarget
 from sailwind_mod_sync.ui.catalog_view import CatalogView, catalog_pack_button
+from sailwind_mod_sync.ui.hidden_mods_dialog import HiddenModsDialog
 from sailwind_mod_sync.ui.library_view import LibraryView
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
 from sailwind_mod_sync.ui.links import repo_button
@@ -49,7 +52,7 @@ def test_busy_dialog_shows_status_text() -> None:
 def test_repo_button_opens_github_url() -> None:
     app = QApplication.instance() or QApplication([])
     button = repo_button("https://github.com/NANDbrew/StickyFix")
-    assert button.text() == "GitHub"
+    assert button.text() == "Open GitHub in Browser"
     assert button.isEnabled()
     assert button.toolTip() == "https://github.com/NANDbrew/StickyFix"
     missing = repo_button("")
@@ -101,7 +104,7 @@ def test_catalog_view_has_add_repo_button() -> None:
         assert "Add GitHub repo" in labels
         assert "Refresh catalog" in labels
         boxes = [box.text() for box in view.findChildren(QCheckBox)]
-        assert "Hide mods in pack" in boxes
+        assert "Hide mods in current pack" in boxes
     finally:
         view.deleteLater()
     app.processEvents()
@@ -180,6 +183,94 @@ def test_catalog_view_shows_add_to_pack_button() -> None:
     app.processEvents()
 
 
+def test_catalog_context_menu_removes_custom_entry() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    removed: list[str] = []
+    view.remove_custom_requested.connect(removed.append)
+    custom = CatalogEntry(
+        repo="https://github.com/example/custom",
+        guids=["com.example.custom"],
+        primary_guid="com.example.custom",
+        name="custom",
+        latest_raw="v1.0.0",
+        latest_version="1.0.0",
+        available=True,
+        custom=True,
+    )
+    try:
+        view.set_data([_catalog_entry(), custom], None)
+        labels = [
+            button.text()
+            for row in range(view.table.rowCount())
+            for button in view.table.cellWidget(row, 4).findChildren(QPushButton)
+        ]
+        assert "Remove" not in labels
+        assert view.table.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+        builtin = view._menu_for_guid("com.example.mod")
+        assert builtin is not None
+        assert [action.text() for action in builtin.actions() if not action.isSeparator()] == [
+            "Hide Mod From Catalog"
+        ]
+        menu = view._menu_for_guid("com.example.custom")
+        assert menu is not None
+        items = [action.text() for action in menu.actions() if not action.isSeparator()]
+        assert items == ["Remove from Catalog"]
+        menu.actions()[0].trigger()
+        assert removed == ["com.example.custom"]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_catalog_hides_builtin_entry_from_context_menu() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    hidden: list[str] = []
+    view.hide_requested.connect(hidden.append)
+    try:
+        view.set_data(
+            [_catalog_entry("com.example.mod"), _catalog_entry("com.example.other")],
+            None,
+        )
+        menu = view._menu_for_guid("com.example.mod")
+        assert menu is not None
+        next(action for action in menu.actions() if action.text() == "Hide Mod From Catalog").trigger()
+        assert hidden == ["com.example.mod"]
+        view.set_data(
+            [_catalog_entry("com.example.mod"), _catalog_entry("com.example.other")],
+            None,
+            hidden_guids=["com.example.mod"],
+        )
+        assert view.table.rowCount() == 1
+        assert view.table.item(0, 1).text() == "com.example.other"
+        assert view._menu_for_guid("com.example.mod") is not None
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_hidden_mods_dialog_unhides_selected() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = HiddenModsDialog([("com.example.mod", "mod"), ("com.example.other", "other")])
+    shown: list[str] = []
+    dialog.unhide_requested.connect(shown.append)
+    try:
+        assert dialog.windowTitle() == "Hidden Mods"
+        assert dialog.mods.count() == 2
+        assert not dialog.unhide.isEnabled()
+        dialog.mods.setCurrentRow(0)
+        assert dialog.unhide.isEnabled()
+        dialog.unhide.click()
+        assert shown == ["com.example.mod"]
+        assert dialog.mods.count() == 1
+        assert dialog.mods.item(0).data(Qt.ItemDataRole.UserRole) == "com.example.other"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
 def test_library_double_click_requests_details() -> None:
     app = QApplication.instance() or QApplication([])
     view = LibraryView()
@@ -251,9 +342,15 @@ def test_library_context_menu_finds_in_catalog() -> None:
     app.processEvents()
 
 
-def test_catalog_reveal_mod_selects_matching_row() -> None:
+def test_catalog_reveal_mod_selects_matching_row(monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     view = CatalogView()
+    scrolled: list[object] = []
+    monkeypatch.setattr(
+        view.table,
+        "scrollToItem",
+        lambda item, hint=QAbstractItemView.ScrollHint.EnsureVisible: scrolled.append(hint) or True,
+    )
     try:
         view.set_data(
             [
@@ -270,15 +367,22 @@ def test_catalog_reveal_mod_selects_matching_row() -> None:
             ],
             None,
         )
+        view.hide_in_pack.setChecked(True)
         view._filter.setText("zebra")
         assert view.table.rowCount() == 1
         assert view.reveal_mod("com.example.apple")
         assert view._filter.text() == ""
+        assert not view.hide_in_pack.isChecked()
+        assert view.table.rowCount() == 2
         selected = [
             view.table.item(index.row(), 1).text()
             for index in view.table.selectionModel().selectedRows()
         ]
         assert selected == ["com.example.apple"]
+        assert view.table.item(view.table.currentRow(), 1).text() == "com.example.apple"
+        highlight = view.table.palette().color(QPalette.ColorRole.Highlight)
+        assert view.table.item(view.table.currentRow(), 0).background().color() == highlight
+        assert QAbstractItemView.ScrollHint.PositionAtCenter in scrolled
         assert not view.reveal_mod("com.missing.mod")
     finally:
         view.deleteLater()
@@ -322,10 +426,12 @@ def test_catalog_hides_in_pack_rows_and_tints_them() -> None:
 
         assert color_for("com.example.mod") != color_for("com.example.other")
         view.hide_in_pack.setChecked(True)
+        view._filter.setText("other")
         assert view.table.rowCount() == 1
         assert view.table.item(0, 1).text() == "com.example.other"
         assert view.reveal_mod("com.example.mod")
         assert not view.hide_in_pack.isChecked()
+        assert view._filter.text() == ""
         selected = [
             view.table.item(index.row(), 1).text()
             for index in view.table.selectionModel().selectedRows()
@@ -429,6 +535,8 @@ def test_pack_view_version_combo_emits_choice() -> None:
             set(),
             {"com.example.mod": [("1.1.0", "v1.1.0"), ("1.0.0", "v1.0.0")]},
         )
+        assert view.import_file.isEnabled()
+        assert view.import_file.text() == "Import Mod DLL/ZIP"
         combo = view.table.cellWidget(0, 3)
         assert isinstance(combo, QComboBox)
         labels = [combo.itemText(index) for index in range(combo.count())]
@@ -440,6 +548,27 @@ def test_pack_view_version_combo_emits_choice() -> None:
         assert combo.currentText() == "v1.0.0"
         combo.setCurrentIndex(labels.index("v1.1.0"))
         assert chosen == [("com.example.mod", "1.1.0", "v1.1.0")]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_pack_view_import_dll_zip_emits_when_pack_selected() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = PackView()
+    clicked: list[int] = []
+    view.import_file_clicked.connect(lambda: clicked.append(1))
+    try:
+        assert not view.import_file.isEnabled()
+        view.set_pack(
+            ModPack(id="crew", name="Crew", mods=[]),
+            [],
+        )
+        assert view.import_file.isEnabled()
+        view.import_file.click()
+        assert clicked == [1]
+        view.set_pack(None, [])
+        assert not view.import_file.isEnabled()
     finally:
         view.deleteLater()
     app.processEvents()
@@ -637,7 +766,13 @@ def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
             if action.menu() and action.menu().title().replace("&", "") == "Download Management"
         )
         download_items = [action.text().replace("&", "") for action in downloads_menu.actions()]
-        assert download_items == ["Manage downloads…", "Import mod file…", "Scan updates"]
+        assert download_items == [
+            "Manage downloads…",
+            "Import mod file…",
+            "Scan updates",
+            "Open AppData",
+            "Hidden Mods",
+        ]
         labels = [button.text() for button in window.findChildren(QPushButton)]
         assert "Copy" in labels
         assert "Paste" in labels
@@ -648,6 +783,42 @@ def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
         window._open_downloads()
         assert window._downloads.isVisible()
         window._downloads.hide()
+    finally:
+        window.close()
+        window.deleteLater()
+        manager.close()
+    app.processEvents()
+
+
+def test_open_appdata_opens_data_root(paths: AppPaths, monkeypatch) -> None:
+    from sailwind_mod_sync.http_util import HttpClient
+    from sailwind_mod_sync.manager import Manager
+    from sailwind_mod_sync.ui.main_window import MainWindow
+
+    class _NoHttp(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def close(self) -> None:
+            return None
+
+    opened: list[str] = []
+
+    def fake_open(url) -> bool:
+        opened.append(url.toLocalFile())
+        return True
+
+    app = QApplication.instance() or QApplication([])
+    manager = Manager(paths=paths, config=AppConfig(check_for_updates=False), http=_NoHttp())
+    manager.catalog = [_catalog_entry()]
+    window = MainWindow(manager)
+    try:
+        monkeypatch.setattr("sailwind_mod_sync.ui.main_window.QDesktopServices.openUrl", fake_open)
+        window._open_appdata()
+        assert [Path(item).resolve() for item in opened] == [paths.root.resolve()]
+        assert "Opened" in window.statusBar().currentMessage()
     finally:
         window.close()
         window.deleteLater()
@@ -738,10 +909,86 @@ def test_pack_view_shows_associate_when_repo_missing() -> None:
         mods=[PinnedMod(guid="local.stickyfix", version="1.2.0", repo="")],
     )
     try:
-        view.set_pack(pack, [])
+        view.set_pack(pack, [], {"local.stickyfix"})
         labels = [button.text() for button in view.findChildren(QPushButton)]
-        assert "Associate" in labels
+        assert "Add Repository" not in labels
         assert "GitHub" not in labels
+        menu = view._menu_for_guid("local.stickyfix")
+        assert menu is not None
+        items = [action.text() for action in menu.actions() if not action.isSeparator()]
+        assert items == ["Add Repository", "Import", "Remove"]
+        found: list[str] = []
+        view.find_repo_requested.connect(found.append)
+        next(action for action in menu.actions() if action.text() == "Add Repository").trigger()
+        assert found == ["local.stickyfix"]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_pack_view_context_menu_moves_github_off_row(monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    view = PackView()
+    pack = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[
+            PinnedMod(
+                guid="com.example.mod",
+                version="1.0.0",
+                repo="https://github.com/example/mod",
+            )
+        ],
+    )
+    opened: list[str] = []
+    monkeypatch.setattr(
+        "sailwind_mod_sync.ui.pack_view.QDesktopServices.openUrl",
+        lambda url: opened.append(url.toString()) or True,
+    )
+    try:
+        view.set_pack(pack, [_catalog_entry("com.example.mod", "1.2.0")], set())
+        labels = [button.text() for button in view.table.cellWidget(0, 5).findChildren(QPushButton)]
+        assert labels == ["Update", "Remove"]
+        menu = view._menu_for_guid("com.example.mod")
+        assert menu is not None
+        items = [action.text() for action in menu.actions() if not action.isSeparator()]
+        assert items == ["Open GitHub in Browser", "Show in Catalog", "Update", "Remove"]
+        github = next(action for action in menu.actions() if action.text() == "Open GitHub in Browser")
+        update = next(action for action in menu.actions() if action.text() == "Update")
+        assert update.isEnabled()
+        github.trigger()
+        assert opened and "github.com/example/mod" in opened[0]
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_pack_view_context_menu_shows_catalog_when_present() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = PackView()
+    shown: list[str] = []
+    view.show_in_catalog_requested.connect(shown.append)
+    pack = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[
+            PinnedMod(guid="com.example.mod", version="1.0.0", repo="https://github.com/example/mod"),
+            PinnedMod(guid="local.orphan", version="1.0.0", repo=""),
+        ],
+    )
+    try:
+        view.set_pack(pack, [_catalog_entry("com.example.mod", "1.2.0")], set())
+        catalog_menu = view._menu_for_guid("com.example.mod")
+        assert catalog_menu is not None
+        catalog_items = [action.text() for action in catalog_menu.actions() if not action.isSeparator()]
+        assert "Show in Catalog" in catalog_items
+        next(action for action in catalog_menu.actions() if action.text() == "Show in Catalog").trigger()
+        assert shown == ["com.example.mod"]
+
+        orphan_menu = view._menu_for_guid("local.orphan")
+        assert orphan_menu is not None
+        orphan_items = [action.text() for action in orphan_menu.actions() if not action.isSeparator()]
+        assert "Show in Catalog" not in orphan_items
     finally:
         view.deleteLater()
     app.processEvents()

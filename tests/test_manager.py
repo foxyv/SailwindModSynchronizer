@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from sailwind_mod_sync.catalog.mvc import find_entry
-from sailwind_mod_sync.config import AppConfig
+from sailwind_mod_sync.config import AppConfig, load_config
 from sailwind_mod_sync.http_util import HttpClient
 from sailwind_mod_sync.library.special_mods import COOP_GUID
 from sailwind_mod_sync.manager import Manager
@@ -541,6 +541,20 @@ def test_add_catalog_repo_is_kept_after_reload(paths: AppPaths, tmp_path: Path, 
     assert find_entry(cached, "com.example.coolmod") is not None
     reloaded.remove_catalog_repo("com.example.coolmod")
     assert find_entry(reloaded.catalog, "com.example.coolmod") is None
+    reloaded.close()
+
+
+def test_hide_catalog_mod_persists(paths: AppPaths) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.hide_catalog_mod("com.example.mod")
+    manager.hide_catalog_mod("com.example.mod")
+    assert manager.config.hidden_catalog_mods == ["com.example.mod"]
+    manager.close()
+
+    reloaded = Manager(paths=paths, config=load_config(paths), http=_NoHttp())
+    assert reloaded.config.hidden_catalog_mods == ["com.example.mod"]
+    reloaded.unhide_catalog_mod("com.example.mod")
+    assert reloaded.config.hidden_catalog_mods == []
     reloaded.close()
 
 
