@@ -49,6 +49,7 @@ from sailwind_mod_sync.ui.repo_dialog import RepoUrlDialog
 from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
 from sailwind_mod_sync.ui.update_dialog import OPEN, SKIP, UPDATE, UpdateDialog
 from sailwind_mod_sync.ui.version_dialog import SelectVersionDialog
+from sailwind_mod_sync.ui.window_state import restore_window_state, save_window_state
 from sailwind_mod_sync.ui.workers import TaskBridge, run_background
 from sailwind_mod_sync.updater import (
     AppUpdate,
@@ -186,13 +187,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.pack_view, "Pack")
         self.tabs.addTab(self.catalog_view, "Catalog")
 
-        splitter = QSplitter()
-        splitter.addWidget(left)
-        splitter.addWidget(self.tabs)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([280, 920])
-        self.setCentralWidget(splitter)
+        self.splitter = QSplitter()
+        self.splitter.addWidget(left)
+        self.splitter.addWidget(self.tabs)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([280, 920])
+        self.setCentralWidget(self.splitter)
 
         settings_action = self.menuBar().addAction("Settings")
         settings_action.triggered.connect(self._open_settings)
@@ -246,6 +247,7 @@ class MainWindow(QMainWindow):
 
         self._reload_packs()
         self._reload_views()
+        restore_window_state(self, self.splitter, paths=self.manager.paths)
         if not self.manager.catalog:
             self._refresh_catalog()
         QTimer.singleShot(4000, self._maybe_check_updates)
@@ -259,6 +261,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         self._downloads._allow_close = True
         self._downloads.close()
+        save_window_state(self, self.splitter, paths=self.manager.paths)
         super().closeEvent(event)
 
     def _reload_packs(self, select_id: str | None = None) -> None:
