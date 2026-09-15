@@ -832,6 +832,16 @@ class MainWindow(QMainWindow):
         if not names:
             self.statusBar().showMessage("Catalog: repository added")
             return
+        self.tabs.setCurrentWidget(self.catalog_view)
+        self.raise_()
+        self.activateWindow()
+        for entry in entries:
+            if entry is None:
+                continue
+            if self.catalog_view.reveal_mod(
+                getattr(entry, "primary_guid", ""), getattr(entry, "repo", "")
+            ):
+                break
         if len(names) == 1:
             guid = getattr(entries[0], "primary_guid", "")
             extra = f" ({guid})" if guid else ""
