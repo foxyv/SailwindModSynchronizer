@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sailwind_mod_sync.catalog.mvc import find_entry
+from sailwind_mod_sync.library.main_dll import SKIP_GUID_PREFIXES, pick_main_dll, _tokens
 from sailwind_mod_sync.models import CatalogEntry, parse_mod_version
 
 LOAD_RE = re.compile(r"Loading \[(.+?) (\d+(?:\.\d+){1,3})\]")
@@ -16,19 +17,6 @@ DLL_GUID_RE = re.compile(
 LOOSE_GUID_RE = re.compile(rb"[A-Za-z][A-Za-z0-9_]{1,40}(?:\.[A-Za-z0-9_]{1,40}){1,6}")
 DLL_VERSION_RE = re.compile(rb"(?:\d+\.){1,3}\d+")
 SKIP_DLL_HINTS = ("bridge", "facepunch", "scripthandler")
-SKIP_GUID_PREFIXES = (
-    "system.",
-    "unityengine.",
-    "unity.",
-    "harmony",
-    "bepinex.",
-    "microsoft.",
-    "mono.",
-    "mscorlib",
-    "netstandard",
-    "newtonsoft.",
-    "assembly-csharp",
-)
 AUTO_MATCH_SCORE = 60
 AUTO_MATCH_EXACT = 80
 AUTO_MATCH_MARGIN = 15
@@ -74,20 +62,25 @@ def scan_plugins_dir(
     return discovered
 
 
-def discover_local_file(path: Path, catalog: list[CatalogEntry] | None = None) -> list[DiscoveredPlugin]:
+def discover_local_file(
+    path: Path,
+    catalog: list[CatalogEntry] | None = None,
+    hints: tuple[str, ...] = (),
+) -> list[DiscoveredPlugin]:
     catalog = catalog or []
     path = path.resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
     suffix = path.suffix.lower()
     if suffix == ".dll":
-        unit = _from_unit(path.stem, [path], [path], catalog, {}, {}, loose_guid=True)
+        unit = _from_unit(path.stem, [path], [path], catalog, {}, {},
+                          loose_guid=True, hints=hints)
         if unit is None:
             return []
         _refine_local_identity(unit, path)
         return [unit]
     if suffix == ".zip":
-        return _discover_zip(path, catalog)
+        return _discover_zip(path, catalog, hints=hints)
     raise ValueError(f"Unsupported file type: {path.suffix}. Use a .dll or .zip.")
 
 
@@ -133,15 +126,19 @@ def _from_unit(
     log_versions: dict[str, str],
     log_guids: dict[str, str],
     loose_guid: bool = False,
+    hints: tuple[str, ...] = (),
 ) -> DiscoveredPlugin | None:
     main_dlls = [path for path in dlls if not _skip_dll(path)]
     search_dlls = main_dlls or dlls
+    all_hints = (name,) + hints if name else hints
+    main_dll = pick_main_dll(search_dlls, hints=all_hints)
+    dll_key = _norm(main_dll.stem) if main_dll else ""
     candidates: list[str] = []
     for dll in search_dlls:
         for guid in extract_guids(dll, loose=loose_guid):
             if guid not in candidates:
                 candidates.append(guid)
-    guid = _pick_guid(name, search_dlls, candidates, catalog, log_guids)
+    guid = _pick_guid(name, dll_key, candidates, catalog, log_guids)
     if not guid:
         guid = f"local.{_norm(name)}"
     guid, entry = apply_catalog_identity(name, guid, catalog)
@@ -163,13 +160,12 @@ def _from_unit(
 
 def _pick_guid(
     name: str,
-    dlls: list[Path],
+    dll_key: str,
     candidates: list[str],
     catalog: list[CatalogEntry],
     log_guids: dict[str, str],
 ) -> str:
     name_key = _norm(name)
-    dll_key = _norm("".join(path.stem for path in dlls[:1]))
     log_guid = log_guids.get(name_key)
     if log_guid:
         return log_guid
@@ -315,15 +311,11 @@ def _norm(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
-def _tokens(value: str) -> set[str]:
-    parts = re.findall(r"[A-Z]?[a-z]+|[0-9]+", value)
-    if not parts:
-        parts = re.findall(r"[a-z0-9]+", value.lower())
-    skip = {"the", "a", "an", "in", "of", "and", "hms", "sailwind", "mod", "plugin"}
-    return {part.lower() for part in parts if part.lower() not in skip}
-
-
-def _discover_zip(path: Path, catalog: list[CatalogEntry]) -> list[DiscoveredPlugin]:
+def _discover_zip(
+    path: Path,
+    catalog: list[CatalogEntry],
+    hints: tuple[str, ...] = (),
+) -> list[DiscoveredPlugin]:
     from sailwind_mod_sync.library.extract import (
         _find_bepinex_plugins,
         _safe_extract,
@@ -331,6 +323,7 @@ def _discover_zip(path: Path, catalog: list[CatalogEntry]) -> list[DiscoveredPlu
         _unwrap_single_root,
     )
 
+    archive_hints = (path.stem,) + hints
     with tempfile.TemporaryDirectory(prefix="sms-import-") as tmp:
         root = Path(tmp) / "extracted"
         root.mkdir()
@@ -348,7 +341,8 @@ def _discover_zip(path: Path, catalog: list[CatalogEntry]) -> list[DiscoveredPlu
                 elif item.is_dir():
                     dlls.extend(item.rglob("*.dll"))
             if dlls:
-                extra = _from_unit(unit.name, unit.plugin_paths, dlls, catalog, {}, {}, loose_guid=True)
+                extra = _from_unit(unit.name, unit.plugin_paths, dlls, catalog, {}, {},
+                                   loose_guid=True, hints=archive_hints)
                 if extra:
                     unit.guid = extra.guid
                     unit.repo = extra.repo or unit.repo
