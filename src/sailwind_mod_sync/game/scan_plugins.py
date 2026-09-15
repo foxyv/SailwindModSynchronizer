@@ -194,7 +194,10 @@ def _pick_guid(
             points += 10
         return points
 
-    return max(candidates, key=score)
+    pool = [g for g in candidates if DLL_GUID_RE.match(g.encode("ascii", errors="ignore"))]
+    if not pool:
+        pool = candidates
+    return max(pool, key=score)
 
 
 def _match_log_version(name: str, guid: str, log_versions: dict[str, str]) -> str | None:

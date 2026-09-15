@@ -222,6 +222,25 @@ def test_sailwindmoddinghelper_regression(tmp_path: Path) -> None:
     assert found[0].guid != "bNewtonsoft.Json.Schema"
 
 
+def test_author_guid_wins_over_dll_collapsed_name(tmp_path: Path) -> None:
+    """Assembly-name strings ("SeaLifeMod.dll") must not beat a real com.* GUID.
+
+    Loose scanning of the binary can yield "SeaLifeMod.dll" (the assembly
+    name string), which matches the mod name perfectly (+90). The real
+    com.* GUID must still win.
+    """
+    zip_path = tmp_path / "SeaLifeMod_v0.0.1.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(
+            "plugins/SeaLifeMod.dll",
+            b"MZ BepInEx com.yourname.sailwind.sealifeplugin SeaLifeMod.dll",
+        )
+    found = discover_local_file(zip_path)
+    assert len(found) == 1
+    assert found[0].guid == "com.yourname.sailwind.sealifeplugin"
+    assert found[0].guid != "SeaLifeMod.dll"
+
+
 def test_from_unit_order_independent(tmp_path: Path) -> None:
     """Same GUID whether the dependency DLL comes first or last in rglob order."""
     plugins = tmp_path / "plugins"
