@@ -80,6 +80,32 @@ def test_normalize_rejects_empty_zip(tmp_path: Path) -> None:
         normalize_plugin_archive(archive, tmp_path / "out")
 
 
+def test_normalize_renames_generic_plugins_folder(tmp_path: Path) -> None:
+    """plugins/SomeMod.dll → SomeMod/SomeMod.dll (generic folder renamed via main DLL stem)."""
+    archive = _write_zip(
+        tmp_path / "helper.zip",
+        {"plugins/SailwindModdingHelper.dll": _dll_bytes()},
+    )
+    dest = tmp_path / "out"
+    folders = normalize_plugin_archive(archive, dest)
+    assert folders == ["SailwindModdingHelper"]
+    assert (dest / "SailwindModdingHelper" / "SailwindModdingHelper.dll").exists()
+    assert not (dest / "plugins").exists()
+
+
+def test_normalize_renames_generic_folder_to_expected(tmp_path: Path) -> None:
+    """Caller's expected folder name is used when a generic folder is extracted."""
+    archive = _write_zip(
+        tmp_path / "m.zip",
+        {"plugins/Whatever.dll": _dll_bytes()},
+    )
+    dest = tmp_path / "out"
+    folders = normalize_plugin_archive(archive, dest, keep_folders=["ExpectedMod"])
+    assert folders == ["ExpectedMod"]
+    assert (dest / "ExpectedMod" / "Whatever.dll").exists()
+    assert not (dest / "plugins").exists()
+
+
 def test_extract_bepinex_pack(tmp_path: Path) -> None:
     archive = _write_zip(
         tmp_path / "bx.zip",

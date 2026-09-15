@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sailwind_mod_sync.catalog.mvc import find_entry
-from sailwind_mod_sync.library.main_dll import SKIP_GUID_PREFIXES, pick_main_dll, _tokens
+from sailwind_mod_sync.library.main_dll import (
+    SKIP_GUID_PREFIXES,
+    is_generic_folder_name,
+    pick_main_dll,
+    _tokens,
+)
 from sailwind_mod_sync.models import CatalogEntry, parse_mod_version
 
 LOAD_RE = re.compile(r"Loading \[(.+?) (\d+(?:\.\d+){1,3})\]")
@@ -142,6 +147,8 @@ def _from_unit(
     if not guid:
         guid = f"local.{_norm(name)}"
     guid, entry = apply_catalog_identity(name, guid, catalog)
+    if is_generic_folder_name(name) and main_dll:
+        name = main_dll.stem
     version = (
         _match_log_version(name, guid, log_versions)
         or (entry.latest_version if entry else None)

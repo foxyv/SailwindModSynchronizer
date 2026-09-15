@@ -23,6 +23,14 @@ _SKIP_STEMS = frozenset({"mscorlib", "netstandard", "assembly-csharp"})
 _SKIP_PREFIXES = tuple(p.rstrip(".") for p in SKIP_GUID_PREFIXES)
 _BEPINEX_BYTES = b"BepInEx"
 
+# Generic container folder names that don't identify a specific mod.
+GENERIC_FOLDER_NAMES = frozenset({"", ".", "plugin", "plugins", "mod", "mods"})
+
+
+def is_generic_folder_name(name: str) -> bool:
+    """True if *name* is a generic container word, not a meaningful mod identifier."""
+    return name.strip().lower() in GENERIC_FOLDER_NAMES
+
 
 def _is_dependency_dll(dll_path: Path) -> bool:
     """True if DLL stem matches known dependency patterns."""

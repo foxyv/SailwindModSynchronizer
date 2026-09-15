@@ -5,6 +5,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from sailwind_mod_sync.library.main_dll import is_generic_folder_name, pick_main_dll
 from sailwind_mod_sync.library.special_mods import COOP_PLUGIN_FOLDER, STEAM_API_DLL
 
 JUNK_NAMES = {".ds_store", "thumbs.db"}
@@ -34,6 +35,7 @@ def normalize_plugin_archive(
         if plugins is not None:
             source = plugins
         folders = _copy_plugin_contents(source, dest)
+        folders = _rename_generic_folders(dest, folders, keep_folders)
         _copy_overlay_steam_api(overlay_root, dest, folders)
         return _retain_folders(dest, folders, keep_folders)
 
@@ -114,6 +116,34 @@ def _find_bepinex_root(root: Path) -> Path:
         if path.is_dir() and path.name == "BepInEx" and (path / "core").exists():
             return path.parent
     raise ExtractError("Archive is not a BepInExPack (missing BepInEx/core or winhttp.dll)")
+
+
+def _rename_generic_folders(dest: Path, folders: list[str], ready_names: list[str] | None) -> list[str]:
+    """Rename folders with generic container names (e.g. 'plugins') to a mod identity.
+
+    Prefers the caller-supplied expected folder name when one is given,
+    otherwise picks the main DLL stem from the folder contents via the
+    shared library.main_dll.pick_main_dll.
+    """
+    ready = [name.strip() for name in (ready_names or []) if name and name.strip()]
+    expected = ready[0] if len(ready) == 1 else None
+    result: list[str] = []
+    for name in folders:
+        folder = dest / name
+        if folder.is_dir() and is_generic_folder_name(name):
+            target = None
+            if expected and not is_generic_folder_name(expected):
+                target = expected
+            else:
+                main = pick_main_dll(list(folder.rglob("*.dll")))
+                if main and not is_generic_folder_name(main.stem):
+                    target = main.stem
+            if target and not (dest / target).exists():
+                folder.rename(dest / target)
+                result.append(target)
+                continue
+        result.append(name)
+    return result
 
 
 def _copy_plugin_contents(source: Path, dest: Path) -> list[str]:

@@ -625,6 +625,43 @@ def test_add_catalog_repo_splits_multi_plugin_release(paths: AppPaths, tmp_path:
     manager.close()
 
 
+def test_add_catalog_repo_generic_plugins_folder_uses_dll_stem(
+    paths: AppPaths, tmp_path: Path, monkeypatch
+) -> None:
+    """Archive with a generic 'plugins' container folder gets the main DLL's
+    name and folder recorded instead of 'plugins'.
+    """
+    from sailwind_mod_sync.models import ReleaseAsset, RemoteRelease
+
+    archive = tmp_path / "SailwindModdingHelper.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "plugins/SailwindModdingHelper.dll",
+            b"MZ" + b"\0" * 16 + b"com.app24.sailwindmoddinghelper\0",
+        )
+
+    class _Http(_NoHttp):
+        def download(self, url, dest, progress=None):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(archive.read_bytes())
+
+    def fake_fetch(*args, **kwargs):
+        return RemoteRelease(
+            tag="v2.1.1",
+            name="v2.1.1",
+            assets=[ReleaseAsset("SailwindModdingHelper.zip", "https://example/SailwindModdingHelper.zip")],
+        )
+
+    monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", fake_fetch)
+    manager = Manager(paths=paths, config=AppConfig(), http=_Http())
+    entries = manager.add_catalog_repo("https://github.com/AppSailwindMods/SailwindModdingHelper")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.name == "SailwindModdingHelper"
+    assert entry.plugin_folders == ["SailwindModdingHelper"]
+    manager.close()
+
+
 def test_add_catalog_repo_rejects_mvc_duplicate(paths: AppPaths, tmp_path: Path, monkeypatch) -> None:
     from sailwind_mod_sync.models import CatalogEntry, ReleaseAsset, RemoteRelease
 
