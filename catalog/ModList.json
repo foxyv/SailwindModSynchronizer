@@ -1,8 +1,110 @@
 [
   {
+    "guid": "DogEggz.AlternativeEmeraldSea",
+    "repo": "https://github.com/DogEggz01/AlternativeEmeraldSea",
+    "name": "AlternativeEmeraldSea",
+    "plugin_folders": ["AlternativeEmeraldSea"]
+  },
+  {
+    "guid": "com.winter.betterports",
+    "repo": "https://github.com/winterspices/CustomIslandAPI",
+    "name": "Better Ports",
+    "plugin_folders": ["Better Ports"]
+  },
+  {
+    "guid": "com.nandbrew.bettertables",
+    "repo": "https://github.com/NANDbrew/BetterTables",
+    "name": "BetterTables",
+    "plugin_folders": ["BetterTables"]
+  },
+  {
+    "guid": "com.Exocet.customitemspawner",
+    "repo": "https://github.com/ExocetC3i/Sailwind_CustomItemSpawner",
+    "name": "CustomItemSpawner",
+    "plugin_folders": ["CustomItemSpawner"]
+  },
+  {
     "guid": "com.dizzy.sailwind.calendar",
     "repo": "https://github.com/foxyv/dizzy_sailwind_mods",
     "name": "Dizzy.Calendar",
     "plugin_folders": ["Dizzy.Calendar"]
+  },
+  {
+    "guid": "com.dizzy.sailwind.nudge",
+    "repo": "https://github.com/foxyv/HammerNudge",
+    "name": "Dizzy.Nudge",
+    "plugin_folders": ["Dizzy.Nudge"]
+  },
+  {
+    "guid": "Dizzy.WinchChooser",
+    "repo": "https://github.com/foxyv/DizzyWinchChooser",
+    "name": "Dizzy.WinchChooser",
+    "plugin_folders": ["Dizzy.WinchChooser"]
+  },
+  {
+    "guid": "com.johng.goodtiming",
+    "repo": "https://github.com/JohnGilb/GoodTiming",
+    "name": "GoodTiming",
+    "plugin_folders": ["GoodTiming"]
+  },
+  {
+    "guid": "com.winter.leopard",
+    "repo": "https://github.com/winterspices/HMSLeopard",
+    "name": "Leopard",
+    "plugin_folders": ["Leopard"]
+  },
+  {
+    "guid": "com.Aquilartz.OldChronian",
+    "repo": "https://github.com/Aquilarts/OldChronian",
+    "name": "OldChronian",
+    "plugin_folders": ["OldChronian"]
+  },
+  {
+    "guid": "com.kingcam16.realisticskies",
+    "repo": "https://github.com/KingCam77/Realistic-Skies",
+    "name": "RealisticSkies",
+    "plugin_folders": ["RealisticSkies"]
+  },
+  {
+    "guid": "com.sailwindcoop.mod",
+    "repo": "https://github.com/DiamondMiner99/sailwind-coop",
+    "name": "SailwindCoop",
+    "plugin_folders": ["SailwindCoop"]
+  },
+  {
+    "guid": "com.app24.sailwindconsole",
+    "repo": "https://github.com/foxyv/SailwindConsole-DizzyFork",
+    "name": "SailwindConsole",
+    "plugin_folders": ["SailwindConsole"]
+  },
+  {
+    "guid": "com.diamondminer99.richpresence",
+    "repo": "https://github.com/DiamondMiner99/sailwind-richpresence",
+    "name": "SailwindRichPresence",
+    "plugin_folders": ["SailwindRichPresence"]
+  },
+  {
+    "guid": "SailwindRigBalance.UI",
+    "repo": "https://github.com/DiamondMiner99/sailwind-rigbalance",
+    "name": "SailwindRigBalance",
+    "plugin_folders": ["SailwindRigBalance"]
+  },
+  {
+    "guid": "DogEggz.SettingMenuFix",
+    "repo": "https://github.com/DogEggz01/SettingMenuFix",
+    "name": "SettingMenuFix",
+    "plugin_folders": ["SettingMenuFix"]
+  },
+  {
+    "guid": "com.TheOriginOfAllEvil.riverSloop",
+    "repo": "https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion",
+    "name": "Shattered Seas Small",
+    "plugin_folders": ["Shattered Seas Small"]
+  },
+  {
+    "guid": "com.TheOriginOfAllEvil.ShatteredSeas",
+    "repo": "https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion",
+    "name": "ShatteredSeasExpansion",
+    "plugin_folders": ["ShatteredSeasExpansion"]
   }
 ]

@@ -1,7 +1,92 @@
 [
   {
+    "guid": "DogEggz.AlternativeEmeraldSea",
+    "repo": "https://github.com/DogEggz01/AlternativeEmeraldSea",
+    "version": "1.0.0"
+  },
+  {
+    "guid": "com.winter.betterports",
+    "repo": "https://github.com/winterspices/CustomIslandAPI",
+    "version": "v1.0.1"
+  },
+  {
+    "guid": "com.nandbrew.bettertables",
+    "repo": "https://github.com/NANDbrew/BetterTables",
+    "version": "v0.1.0"
+  },
+  {
+    "guid": "com.Exocet.customitemspawner",
+    "repo": "https://github.com/ExocetC3i/Sailwind_CustomItemSpawner",
+    "version": "v1.1.1"
+  },
+  {
     "guid": "com.dizzy.sailwind.calendar",
     "repo": "https://github.com/foxyv/dizzy_sailwind_mods",
     "version": "v0.2.0"
+  },
+  {
+    "guid": "com.dizzy.sailwind.nudge",
+    "repo": "https://github.com/foxyv/HammerNudge",
+    "version": "v0.1.0"
+  },
+  {
+    "guid": "Dizzy.WinchChooser",
+    "repo": "https://github.com/foxyv/DizzyWinchChooser",
+    "version": "v0.1.2"
+  },
+  {
+    "guid": "com.johng.goodtiming",
+    "repo": "https://github.com/JohnGilb/GoodTiming",
+    "version": "1.0.0"
+  },
+  {
+    "guid": "com.winter.leopard",
+    "repo": "https://github.com/winterspices/HMSLeopard",
+    "version": "v1.5.3"
+  },
+  {
+    "guid": "com.Aquilartz.OldChronian",
+    "repo": "https://github.com/Aquilarts/OldChronian",
+    "version": "v0.6.0"
+  },
+  {
+    "guid": "com.kingcam16.realisticskies",
+    "repo": "https://github.com/KingCam77/Realistic-Skies",
+    "version": "V2.3.0"
+  },
+  {
+    "guid": "com.sailwindcoop.mod",
+    "repo": "https://github.com/DiamondMiner99/sailwind-coop",
+    "version": "v0.3.2"
+  },
+  {
+    "guid": "com.app24.sailwindconsole",
+    "repo": "https://github.com/foxyv/SailwindConsole-DizzyFork",
+    "version": "v1.1.0"
+  },
+  {
+    "guid": "com.diamondminer99.richpresence",
+    "repo": "https://github.com/DiamondMiner99/sailwind-richpresence",
+    "version": "v0.1.0"
+  },
+  {
+    "guid": "SailwindRigBalance.UI",
+    "repo": "https://github.com/DiamondMiner99/sailwind-rigbalance",
+    "version": "v0.16.1"
+  },
+  {
+    "guid": "DogEggz.SettingMenuFix",
+    "repo": "https://github.com/DogEggz01/SettingMenuFix",
+    "version": "1.0.0"
+  },
+  {
+    "guid": "com.TheOriginOfAllEvil.riverSloop",
+    "repo": "https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion",
+    "version": "b1.2.8"
+  },
+  {
+    "guid": "com.TheOriginOfAllEvil.ShatteredSeas",
+    "repo": "https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion",
+    "version": "b1.2.8"
   }
 ]
