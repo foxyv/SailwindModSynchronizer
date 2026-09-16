@@ -5,11 +5,13 @@ from datetime import datetime
 import logging
 from pathlib import Path
 import subprocess
+import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -39,6 +41,7 @@ from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, Associ
 from sailwind_mod_sync.ui.catalog_view import CatalogView
 from sailwind_mod_sync.ui.downloads_window import DownloadsWindow
 from sailwind_mod_sync.ui.hidden_mods_dialog import HiddenModsDialog
+from sailwind_mod_sync.ui.import_plugins_dialog import ImportPluginsDialog
 from sailwind_mod_sync.ui.launch_splash import LaunchSplash
 from sailwind_mod_sync.ui.links import help_text_to_html
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
@@ -49,6 +52,7 @@ from sailwind_mod_sync.ui.repo_dialog import RepoUrlDialog
 from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
 from sailwind_mod_sync.ui.update_dialog import OPEN, SKIP, UPDATE, UpdateDialog
 from sailwind_mod_sync.ui.version_dialog import SelectVersionDialog
+from sailwind_mod_sync.ui.window_state import restore_window_state, save_window_state
 from sailwind_mod_sync.ui.workers import TaskBridge, run_background
 from sailwind_mod_sync.updater import (
     AppUpdate,
@@ -60,6 +64,16 @@ from sailwind_mod_sync.updater import (
 )
 
 log = logging.getLogger(__name__)
+
+# Delay after startup before the catalog is scanned in the background for
+# updates, so the window can appear and stay responsive.
+AUTO_SCAN_START_DELAY_MS = 2000
+# If an automatic scan cannot start because another task is busy, retry after
+# this delay instead of dropping the scan.
+AUTO_SCAN_RETRY_DELAY_MS = 10000
+# A manual "scan updates" click within this window after a scan (automatic or
+# manual) just finished asks the user whether they really want to rerun it.
+MOD_SCAN_RECENT_SECONDS = 300.0
 
 PLAY_BUTTON_STYLE = """
 QPushButton {
@@ -82,6 +96,18 @@ QPushButton:disabled {
 }
 """
 
+UPDATES_HINT_STYLE = """
+QLabel {
+    color: #ffffff;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background-color: #2e7d32;
+    margin-right: 2px;
+    margin-bottom: 1px;
+}
+"""
+
 
 class MainWindow(QMainWindow):
     def __init__(self, manager: Manager) -> None:
@@ -95,6 +121,14 @@ class MainWindow(QMainWindow):
         self._on_ok: Callable | None = None
         self._progress_dialog: BusyDialog | None = None
         self._launch_splash: LaunchSplash | None = None
+        self._mod_scan_running = False
+        self._mod_scan_done_at = float("-inf")
+        self._mod_scan_bridge: TaskBridge | None = None
+
+        self._updates_hint = QLabel(self.statusBar())
+        self._updates_hint.setStyleSheet(UPDATES_HINT_STYLE)
+        self._updates_hint.hide()
+        self.statusBar().addPermanentWidget(self._updates_hint)
 
         self.pack_list = QListWidget()
         self.pack_list.currentItemChanged.connect(self._on_pack_selected)
@@ -186,13 +220,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.pack_view, "Pack")
         self.tabs.addTab(self.catalog_view, "Catalog")
 
-        splitter = QSplitter()
-        splitter.addWidget(left)
-        splitter.addWidget(self.tabs)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([280, 920])
-        self.setCentralWidget(splitter)
+        self.splitter = QSplitter()
+        self.splitter.addWidget(left)
+        self.splitter.addWidget(self.tabs)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([280, 920])
+        self.setCentralWidget(self.splitter)
 
         settings_action = self.menuBar().addAction("Settings")
         settings_action.triggered.connect(self._open_settings)
@@ -246,9 +280,11 @@ class MainWindow(QMainWindow):
 
         self._reload_packs()
         self._reload_views()
+        restore_window_state(self, self.splitter, paths=self.manager.paths)
         if not self.manager.catalog:
             self._refresh_catalog()
         QTimer.singleShot(4000, self._maybe_check_updates)
+        QTimer.singleShot(AUTO_SCAN_START_DELAY_MS, self._maybe_auto_scan_mods)
 
     def current_pack_id(self) -> str | None:
         item = self.pack_list.currentItem()
@@ -259,6 +295,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         self._downloads._allow_close = True
         self._downloads.close()
+        save_window_state(self, self.splitter, paths=self.manager.paths)
         super().closeEvent(event)
 
     def _reload_packs(self, select_id: str | None = None) -> None:
@@ -317,6 +354,16 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Game: {game}")
         else:
             self.statusBar().showMessage("Set the Sailwind folder in Settings")
+        self._update_pack_updates_hint()
+
+    def _update_pack_updates_hint(self) -> None:
+        count = self.pack_view.available_updates()
+        if count:
+            label = "1 mod update available" if count == 1 else f"{count} mod updates available"
+            self._updates_hint.setText(label)
+            self._updates_hint.show()
+        else:
+            self._updates_hint.hide()
 
     def _on_pack_selected(self) -> None:
         pack_id = self.current_pack_id()
@@ -612,12 +659,20 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Imported {pack.name}")
 
     def _import_game_plugins(self) -> None:
-        name, ok = QInputDialog.getText(self, "Import game plugins", "ModPack name:", text="Current game")
-        if not ok or not name.strip():
+        game = self.manager.game_dir()
+        default_path = str(game / "BepInEx" / "plugins") if game is not None else ""
+        dialog = ImportPluginsDialog(default_path, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        name = dialog.pack_name()
+        plugins_dir = dialog.plugins_dir()
 
         def work(progress):
-            return self.manager.import_game_plugins(pack_name=name.strip(), progress=progress)
+            return self.manager.import_game_plugins(
+                pack_name=name,
+                plugins_dir=plugins_dir,
+                progress=progress,
+            )
 
         self._run(work, self._game_plugins_imported, "Importing installed plugins…")
 
@@ -829,6 +884,16 @@ class MainWindow(QMainWindow):
         if not names:
             self.statusBar().showMessage("Catalog: repository added")
             return
+        self.tabs.setCurrentWidget(self.catalog_view)
+        self.raise_()
+        self.activateWindow()
+        for entry in entries:
+            if entry is None:
+                continue
+            if self.catalog_view.reveal_mod(
+                getattr(entry, "primary_guid", ""), getattr(entry, "repo", "")
+            ):
+                break
         if len(names) == 1:
             guid = getattr(entries[0], "primary_guid", "")
             extra = f" ({guid})" if guid else ""
@@ -861,7 +926,74 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _scan_updates(self) -> None:
+        if self._mod_scan_running:
+            QMessageBox.information(
+                self,
+                "Scan in progress",
+                "A mod update scan is already running. Please wait for it to finish.",
+            )
+            return
+        if time.monotonic() - self._mod_scan_done_at < MOD_SCAN_RECENT_SECONDS:
+            answer = QMessageBox.question(
+                self,
+                "Scan again?",
+                "A mod update scan just finished. Do you still want to run it again?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._run(lambda progress: self.manager.scan_updates(live=True, progress=progress), self._updates_scanned, "Scanning repositories…")
+
+    def _maybe_auto_scan_mods(self) -> None:
+        """Kick off a quiet background mod-update scan after startup."""
+        if not self.manager.config.auto_scan_mods:
+            return
+        if not self.manager.config.token():
+            log.info("Skipping automatic mod update scan: no GitHub token configured")
+            return
+        if self._busy or self._mod_scan_running:
+            log.info("Deferring automatic mod update scan: another task is running")
+            QTimer.singleShot(AUTO_SCAN_RETRY_DELAY_MS, self._maybe_auto_scan_mods)
+            return
+        log.info("Starting background mod update scan")
+        self._start_background_mod_scan()
+
+    def _start_background_mod_scan(self) -> None:
+        if self._mod_scan_running or self._busy:
+            return
+        self._mod_scan_running = True
+        self.statusBar().showMessage("Scanning repositories for updates…")
+        bridge = TaskBridge(self)
+        self._mod_scan_bridge = bridge
+        queued = Qt.ConnectionType.QueuedConnection
+        bridge.finished.connect(self._mod_scan_finished, queued)
+        bridge.failed.connect(self._mod_scan_failed, queued)
+        work = lambda progress: self.manager.scan_updates(live=True, progress=progress)
+        QTimer.singleShot(0, lambda: run_background(work, bridge))
+
+    def _clear_mod_scan(self) -> None:
+        self._mod_scan_running = False
+        self._mod_scan_done_at = time.monotonic()
+        if self._mod_scan_bridge is not None:
+            self._mod_scan_bridge.deleteLater()
+            self._mod_scan_bridge = None
+
+    def _mod_scan_finished(self, _result) -> None:
+        self._clear_mod_scan()
+        self._reload_views()
+        self.statusBar().showMessage("Update scan complete")
+
+    def _mod_scan_failed(self, message: str) -> None:
+        self._clear_mod_scan()
+        text = (message or "").strip() or "The task failed."
+        if text.startswith("TokenAuthError: "):
+            detail = text.removeprefix("TokenAuthError: ")
+            log.error("Mod update scan rejected token: %s", detail)
+            QMessageBox.warning(self, "Invalid GitHub token", detail)
+            self.statusBar().showMessage("Update scan skipped: invalid GitHub token")
+        else:
+            log.error("Background mod scan failed: %s", text)
+            self.statusBar().showMessage(text)
+        self._reload_views()
 
     def _updates_scanned(self, _result) -> None:
         self._reload_views()
@@ -1290,9 +1422,7 @@ class MainWindow(QMainWindow):
         self._sailwind_started(proc, pack_id=None, vanilla=True)
 
     def _sailwind_started(self, result: object, pack_id: str | None, *, vanilla: bool = False) -> None:
-        if not isinstance(result, subprocess.Popen):
-            self.statusBar().showMessage("Sailwind launched")
-            return
+        process = result if isinstance(result, subprocess.Popen) else None
         heading = "Starting Sailwind (vanilla)" if vanilla else "Starting Sailwind"
         pack = self.manager.packs.get(pack_id) if pack_id else None
         if pack is not None:
@@ -1307,13 +1437,13 @@ class MainWindow(QMainWindow):
         if previous is not None:
             previous.close()
             previous.deleteLater()
-        splash = LaunchSplash(self, result, heading=heading, log_paths=logs)
+        splash = LaunchSplash(self, process, heading=heading, log_paths=logs)
         self._launch_splash = splash
         splash.finished.connect(lambda _=0: self._launch_splash_closed(splash))
         splash.show()
         splash.raise_()
         splash.activateWindow()
-        self.statusBar().showMessage("Waiting for Sailwind to open…")
+        self.statusBar().showMessage("Waiting for Steam to open Sailwind…")
 
     def _launch_splash_closed(self, splash: LaunchSplash) -> None:
         if self._launch_splash is splash:

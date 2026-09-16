@@ -180,6 +180,10 @@ class PackView(QWidget):
                 self._enable_row_context_menu(actions, guid)
                 self.table.setCellWidget(index, 5, actions)
 
+    def available_updates(self) -> int:
+        """Number of mods in the current pack with a newer version in the catalog."""
+        return sum(1 for _, _, can_update, _ in self._row_state.values() if can_update)
+
     def _version_combo(
         self,
         pinned: PinnedMod,

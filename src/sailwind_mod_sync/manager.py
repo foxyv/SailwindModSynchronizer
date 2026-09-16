@@ -38,7 +38,7 @@ from sailwind_mod_sync.game.bepinex import doorstop_installed, install_doorstop,
 from sailwind_mod_sync.game.detect import detect_game_path, resolve_game_dir
 from sailwind_mod_sync.game.launch import launch_modded, launch_vanilla
 from sailwind_mod_sync.game.scan_plugins import discover_local_file, scan_plugins_dir
-from sailwind_mod_sync.http_util import HttpClient, ProgressFn
+from sailwind_mod_sync.http_util import HttpClient, HttpError, ProgressFn
 from sailwind_mod_sync.library.aliases import load_aliases, save_aliases
 from sailwind_mod_sync.library.download import ensure_bepinex, ensure_mod_artifact
 from sailwind_mod_sync.library.special_mods import artifact_ready, coop_dll_search_path, known_repo_for
@@ -66,6 +66,10 @@ from sailwind_mod_sync.packs.share import encode_pack_share, parse_share_text
 from sailwind_mod_sync.paths import AppPaths
 
 log = logging.getLogger(__name__)
+
+
+class TokenAuthError(RuntimeError):
+    """Raised when a configured GitHub token is rejected (HTTP 401)."""
 
 
 class Manager:
@@ -220,6 +224,14 @@ class Manager:
                     paths=self.paths,
                     progress=progress,
                 )
+            except HttpError as exc:
+                if exc.status_code == 401 and self.config.token():
+                    raise TokenAuthError(
+                        "Your GitHub token is invalid or expired (GitHub returned HTTP 401). "
+                        "Fix it in Settings."
+                    ) from exc
+                log.warning("Live update check failed for %s: %s", entry.repo, exc)
+                continue
             except Exception as exc:
                 log.warning("Live update check failed for %s: %s", entry.repo, exc)
                 continue
@@ -971,7 +983,8 @@ class Manager:
         game_dir = self.game_dir()
         if game_dir is None:
             raise FileNotFoundError("Sailwind.exe not found. Set the game path in Settings.")
-        log.info("Launching vanilla Sailwind from %s", game_dir)
+        log.info("Launching vanilla Sailwind from %s via Steam", game_dir)
+        write_doorstop_config(game_dir, enabled=False)
         return launch_vanilla(game_dir)
 
     def export_pack(self, pack_id: str, dest: Path, bundle: bool = False) -> Path:

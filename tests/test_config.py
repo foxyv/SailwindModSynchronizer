@@ -27,10 +27,19 @@ def test_old_config_without_flag_warns_by_default(paths: AppPaths) -> None:
     loaded = load_config(paths)
     assert loaded.warn_missing_mods is True
     assert loaded.check_for_updates is True
+    assert loaded.auto_scan_mods is True
     assert loaded.game_path == "D:/Sailwind"
     assert loaded.last_update_check == ""
     assert loaded.skipped_update_version == ""
     assert loaded.hidden_catalog_mods == []
+
+
+def test_save_and_load_auto_scan_mods(paths: AppPaths) -> None:
+    save_config(paths, AppConfig(auto_scan_mods=False))
+    loaded = load_config(paths)
+    assert loaded.auto_scan_mods is False
+    payload = json.loads(paths.config_file.read_text(encoding="utf-8"))
+    assert payload["auto_scan_mods"] is False
 
 
 def test_save_and_load_update_settings(paths: AppPaths) -> None:

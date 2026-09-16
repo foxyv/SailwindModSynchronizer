@@ -1203,3 +1203,32 @@ def test_pack_header_sorts_by_mod_name() -> None:
         view.deleteLater()
     app.processEvents()
 
+
+
+def test_pack_view_reports_available_updates() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = PackView()
+    try:
+        pack = ModPack(
+            id="crew",
+            name="Crew",
+            mods=[
+                PinnedMod(guid="com.example.mod", version="1.0.0", repo="https://github.com/example/mod"),
+                PinnedMod(guid="com.example.old", version="1.0.0", repo="https://github.com/example/old"),
+                PinnedMod(guid="com.example.locked", version="1.2.0", repo="https://github.com/example/locked"),
+            ],
+        )
+        view.set_pack(
+            pack,
+            [
+                _catalog_entry("com.example.mod", "1.2.0"),
+                _catalog_entry("com.example.old", "2.0.0"),
+                _catalog_entry("com.example.locked", "1.2.0"),
+            ],
+        )
+        assert view.available_updates() == 2
+        view.set_pack(None, [])
+        assert view.available_updates() == 0
+    finally:
+        view.deleteLater()
+    app.processEvents()

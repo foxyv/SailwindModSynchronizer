@@ -5,11 +5,13 @@ from pathlib import Path
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from sailwind_mod_sync.catalog.mvc import find_entry
 from sailwind_mod_sync.config import AppConfig, load_config
-from sailwind_mod_sync.http_util import HttpClient
+from sailwind_mod_sync.http_util import HttpClient, HttpError
 from sailwind_mod_sync.library.special_mods import COOP_GUID
-from sailwind_mod_sync.manager import Manager
+from sailwind_mod_sync.manager import Manager, TokenAuthError
 from sailwind_mod_sync.models import CatalogEntry, PinnedMod, RemoteRelease
 from sailwind_mod_sync.paths import AppPaths
 
@@ -847,3 +849,51 @@ def test_set_mod_alias_persists_and_overrides_name(paths: AppPaths, tmp_path: Pa
     assert cleared == "Dizzy.Gamma"
     assert "com.dizzy.sailwind.gamma" not in load_aliases(paths)
     manager.close()
+
+
+def _catalog_with_repo() -> list[CatalogEntry]:
+    return [
+        CatalogEntry(
+            repo="https://github.com/example/mymod",
+            guids=["com.example.mymod"],
+            primary_guid="com.example.mymod",
+            name="MyMod",
+            latest_raw="v1.0.0",
+            latest_version="1.0.0",
+            available=True,
+        )
+    ]
+
+
+def test_scan_updates_raises_token_auth_error_on_401_with_token(
+    paths: AppPaths, monkeypatch
+) -> None:
+    def bad_fetch(*args, **kwargs):
+        raise HttpError("HTTP 401 for https://api.github.com", status_code=401)
+
+    monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", bad_fetch)
+    manager = Manager(
+        paths=paths,
+        config=AppConfig(github_token="ghp_fake"),
+        http=_NoHttp(),
+    )
+    manager.catalog = _catalog_with_repo()
+    try:
+        with pytest.raises(TokenAuthError):
+            manager.scan_updates(live=True)
+    finally:
+        manager.close()
+
+
+def test_scan_updates_without_token_ignores_401(paths: AppPaths, monkeypatch) -> None:
+    def bad_fetch(*args, **kwargs):
+        raise HttpError("HTTP 401 for https://api.github.com", status_code=401)
+
+    monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", bad_fetch)
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.catalog = _catalog_with_repo()
+    try:
+        latest = manager.scan_updates(live=True)
+    finally:
+        manager.close()
+    assert latest["com.example.mymod"] == "v1.0.0"
