@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal
 
+from sailwind_mod_sync.catalog.github import GitHubDownloadError
 from sailwind_mod_sync.http_util import ProgressFn
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ def run_background(fn: Callable[[ProgressFn], object], bridge: TaskBridge) -> th
             result = fn(_progress(bridge))
         except Exception as exc:
             log.exception("Background task failed")
+            if isinstance(exc, GitHubDownloadError):
+                bridge.failed.emit(str(exc))
+                return
             detail = str(exc).strip() or repr(exc)
             bridge.failed.emit(f"{type(exc).__name__}: {detail}")
             return

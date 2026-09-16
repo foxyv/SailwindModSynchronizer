@@ -3,11 +3,13 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+from sailwind_mod_sync.catalog.github import GitHubDownloadError
 from sailwind_mod_sync.http_util import HttpClient, HttpError
 from sailwind_mod_sync.library.download import ensure_mod_artifact
 from sailwind_mod_sync.library.special_mods import (
     COOP_GUID,
     COOP_REPO,
+    FAIL_DOWNLOAD_GUID,
     artifact_needs_refetch,
     artifact_ready,
     known_repo_for,
@@ -62,6 +64,27 @@ def test_known_repo_for_coop() -> None:
     assert known_repo_for("com.sailwindcoop.mod") == COOP_REPO
     assert known_repo_for("COM.SAILWINDCOOP.MOD") == COOP_REPO
     assert known_repo_for("com.dizzy.sailwind.gamma") is None
+    assert known_repo_for(FAIL_DOWNLOAD_GUID).endswith("SailwindModSynchronizer")
+
+
+def test_fail_download_test_mod_raises_manual_import_help(paths: AppPaths) -> None:
+    store = LibraryStore(paths)
+    try:
+        ensure_mod_artifact(
+            store,
+            _FakeHttp(b"MZ"),
+            guid=FAIL_DOWNLOAD_GUID,
+            repo="",
+            version="0.0.1",
+        )
+    except GitHubDownloadError as exc:
+        text = str(exc)
+    else:
+        raise AssertionError("expected GitHubDownloadError")
+    assert GitHubDownloadError.is_help_text(text)
+    assert "BrokenDownloadTest.zip" in text
+    assert "Import Mod DLL/ZIP" in text
+    assert "12 of 52428800" in text
 
 
 def test_refetches_incomplete_coop_artifact(paths: AppPaths, tmp_path: Path, monkeypatch) -> None:

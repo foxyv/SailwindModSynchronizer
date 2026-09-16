@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import logging
+import zipfile
 from pathlib import Path
 
-from sailwind_mod_sync.catalog.github import fetch_release, list_releases, pick_release_asset, release_version
+from sailwind_mod_sync.catalog.github import (
+    GitHubDownloadError,
+    download_release_asset,
+    fetch_release,
+    github_manual_download_help,
+    list_releases,
+    pick_release_asset,
+    release_version,
+)
 from sailwind_mod_sync.catalog.thunderstore import download_bepinex_pack, latest_bepinex_version
 from sailwind_mod_sync.constants import DEFAULT_BEPINEX_VERSION
 from sailwind_mod_sync.http_util import HttpClient, ProgressFn
-from sailwind_mod_sync.library.special_mods import artifact_needs_refetch, known_repo_for
+from sailwind_mod_sync.library.extract import ExtractError
+from sailwind_mod_sync.library.special_mods import (
+    FAIL_DOWNLOAD_ASSET,
+    FAIL_DOWNLOAD_REPO,
+    FAIL_DOWNLOAD_VERSION,
+    artifact_needs_refetch,
+    is_fail_download_guid,
+    known_repo_for,
+)
 from sailwind_mod_sync.library.store import LibraryStore
 from sailwind_mod_sync.models import ArtifactMeta, parse_mod_version
 
@@ -27,6 +44,19 @@ def ensure_mod_artifact(
 ) -> ArtifactMeta:
     repo = (repo or "").strip() or (known_repo_for(guid) or "")
     log.info("ensure_mod_artifact guid=%s version=%s repo=%s", guid, version, repo)
+    if is_fail_download_guid(guid):
+        raise GitHubDownloadError(
+            github_manual_download_help(
+                asset_name=FAIL_DOWNLOAD_ASSET,
+                download_url=(
+                    f"{FAIL_DOWNLOAD_REPO}/releases/download/v{FAIL_DOWNLOAD_VERSION}/"
+                    f"{FAIL_DOWNLOAD_ASSET}"
+                ),
+                release_url=f"{FAIL_DOWNLOAD_REPO}/releases/tag/v{FAIL_DOWNLOAD_VERSION}",
+                repo_url=FAIL_DOWNLOAD_REPO,
+                reason="Simulated incomplete download: got 12 of 52428800 bytes.",
+            )
+        )
     if version:
         cached = _reuse_or_filter_cache(store, guid, version, repo, plugin_folders)
         if cached is not None:
@@ -52,27 +82,48 @@ def ensure_mod_artifact(
     dest = dest_dir / asset.name
     if progress:
         progress(f"Downloading {asset.name}…")
-    http.download(asset.download_url, dest, progress=progress)
-    version_raw = release.tag if parse_mod_version(release.tag) else release_version(release) or remote_version
-    if asset.name.lower().endswith(".dll"):
-        return store.ingest_plugin_paths(
+    try:
+        download_release_asset(
+            http,
+            asset,
+            dest,
+            progress=progress,
+            release_url=release.html_url,
+            repo_url=repo,
+        )
+        version_raw = release.tag if parse_mod_version(release.tag) else release_version(release) or remote_version
+        if asset.name.lower().endswith(".dll"):
+            return store.ingest_plugin_paths(
+                guid,
+                remote_version,
+                [dest],
+                version_raw=version_raw,
+                repo=repo,
+                source_url=asset.download_url,
+            )
+        return store.ingest_mod_zip(
             guid,
             remote_version,
-            [dest],
+            dest,
             version_raw=version_raw,
             repo=repo,
             source_url=asset.download_url,
+            filename=asset.name,
+            keep_folders=plugin_folders,
         )
-    return store.ingest_mod_zip(
-        guid,
-        remote_version,
-        dest,
-        version_raw=version_raw,
-        repo=repo,
-        source_url=asset.download_url,
-        filename=asset.name,
-        keep_folders=plugin_folders,
-    )
+    except GitHubDownloadError:
+        raise
+    except (zipfile.BadZipFile, ExtractError, OSError) as exc:
+        dest.unlink(missing_ok=True)
+        raise GitHubDownloadError(
+            github_manual_download_help(
+                asset_name=asset.name,
+                download_url=asset.download_url,
+                release_url=release.html_url,
+                repo_url=repo,
+                reason=str(exc).strip() or type(exc).__name__,
+            )
+        ) from exc
 
 
 def ensure_bepinex(

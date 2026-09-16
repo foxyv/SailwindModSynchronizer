@@ -26,7 +26,7 @@ from sailwind_mod_sync.ui.catalog_view import CatalogView, catalog_pack_button
 from sailwind_mod_sync.ui.hidden_mods_dialog import HiddenModsDialog
 from sailwind_mod_sync.ui.library_view import LibraryView
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
-from sailwind_mod_sync.ui.links import repo_button
+from sailwind_mod_sync.ui.links import help_text_to_html, repo_button
 from sailwind_mod_sync.ui.missing_mods_dialog import MissingModsWarningDialog
 from sailwind_mod_sync.ui.pack_view import PackView
 from sailwind_mod_sync.ui.progress_dialog import BusyDialog
@@ -58,6 +58,19 @@ def test_repo_button_opens_github_url() -> None:
     missing = repo_button("")
     assert not missing.isEnabled()
     app.processEvents()
+
+
+def test_help_text_to_html_makes_release_url_clickable() -> None:
+    html = help_text_to_html(
+        "Could not finish downloading HugeMod.zip from GitHub.\n"
+        "1. Open the GitHub release page:\n"
+        "   https://github.com/example/mod/releases/tag/v1.0.0\n"
+        "3. Import Mod DLL/ZIP"
+    )
+    assert '<a href="https://github.com/example/mod/releases/tag/v1.0.0">' in html
+    assert "https://github.com/example/mod/releases/tag/v1.0.0</a>" in html
+    assert "<br>" in html
+    assert "&lt;" not in html
 
 
 def test_table_columns_are_interactive() -> None:
@@ -384,6 +397,50 @@ def test_catalog_reveal_mod_selects_matching_row(monkeypatch) -> None:
         assert view.table.item(view.table.currentRow(), 0).background().color() == highlight
         assert QAbstractItemView.ScrollHint.PositionAtCenter in scrolled
         assert not view.reveal_mod("com.missing.mod")
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_catalog_reveal_clears_when_another_row_selected() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    pack = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[PinnedMod(guid="com.example.apple", version="2.0.0")],
+    )
+    try:
+        view.set_data(
+            [
+                _catalog_entry("com.example.zebra", "1.0.0"),
+                CatalogEntry(
+                    repo="https://github.com/example/apple",
+                    guids=["com.example.apple"],
+                    primary_guid="com.example.apple",
+                    name="apple",
+                    latest_raw="v2.0.0",
+                    latest_version="2.0.0",
+                    available=True,
+                ),
+            ],
+            pack,
+        )
+        assert view.reveal_mod("com.example.apple")
+        highlight = view.table.palette().color(QPalette.ColorRole.Highlight)
+        apple_row = view.table.currentRow()
+        assert view.table.item(apple_row, 0).background().color() == highlight
+        zebra_row = next(
+            row
+            for row in range(view.table.rowCount())
+            if view.table.item(row, 1).text() == "com.example.zebra"
+        )
+        view.table.selectRow(zebra_row)
+        assert view._revealed_guid == ""
+        apple_bg = view.table.item(apple_row, 0).background().color()
+        zebra_bg = view.table.item(zebra_row, 0).background().color()
+        assert apple_bg != highlight
+        assert apple_bg != zebra_bg
     finally:
         view.deleteLater()
     app.processEvents()

@@ -38,6 +38,7 @@ class CatalogView(QWidget):
         self._pack: ModPack | None = None
         self._hidden_guids: set[str] = set()
         self._revealed_guid = ""
+        self._syncing_table = False
         self._filter = QLineEdit()
         self._filter.setPlaceholderText("Filter catalog…")
         self._filter.textChanged.connect(self._apply_filter)
@@ -61,6 +62,7 @@ class CatalogView(QWidget):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_table_context_menu)
         self.table.cellDoubleClicked.connect(self._on_double_click)
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
 
         top = QHBoxLayout()
         top.addWidget(self._filter, 1)
@@ -97,45 +99,49 @@ class CatalogView(QWidget):
         palette = self.table.palette()
         revealed_bg = palette.color(QPalette.ColorRole.Highlight)
         revealed_fg = palette.color(QPalette.ColorRole.HighlightedText)
-        with sorting_paused(self.table):
-            self.table.setRowCount(len(rows))
-            for index, entry in enumerate(rows):
-                status = _catalog_status(entry, self._pack)
-                self.table.setItem(index, 0, sortable_item(entry.name))
-                guid_item = sortable_item(entry.guid_label, entry.primary_guid.casefold())
-                guid_item.setToolTip("\n".join(entry.guids))
-                self.table.setItem(index, 1, guid_item)
-                latest = entry.latest_raw or ("none" if not entry.available else "")
-                latest_key = (0 if entry.available else 1, version_sort_key(entry.latest_raw))
-                self.table.setItem(index, 2, sortable_item(latest, latest_key))
-                self.table.setItem(index, 3, sortable_item(status))
-                self.table.setItem(index, 4, sortable_item(""))
-                actions = QWidget()
-                actions_layout = QHBoxLayout(actions)
-                actions_layout.setContentsMargins(4, 0, 4, 0)
-                actions_layout.addWidget(repo_button(entry.repo, actions))
-                label, tip = catalog_pack_button(entry, self._pack)
-                button = QPushButton(label)
-                button.setEnabled(entry.available and self._pack is not None)
-                if self._pack is None:
-                    button.setToolTip("Select a ModPack first")
-                else:
-                    button.setToolTip(tip)
-                guid = entry.primary_guid
-                button.clicked.connect(lambda _=False, value=guid: self.install_requested.emit(value))
-                actions_layout.addWidget(button)
-                self.table.setCellWidget(index, 4, actions)
-                self._enable_row_context_menu(actions, guid)
-                if entry.primary_guid == self._revealed_guid or self._revealed_guid in entry.guids:
-                    _paint_row(
-                        self.table,
-                        index,
-                        revealed_bg,
-                        actions,
-                        revealed_fg,
-                    )
-                elif _pinned_for_entry(entry, self._pack) is not None:
-                    _paint_row(self.table, index, in_pack_bg, actions)
+        self._syncing_table = True
+        try:
+            with sorting_paused(self.table):
+                self.table.setRowCount(len(rows))
+                for index, entry in enumerate(rows):
+                    status = _catalog_status(entry, self._pack)
+                    self.table.setItem(index, 0, sortable_item(entry.name))
+                    guid_item = sortable_item(entry.guid_label, entry.primary_guid.casefold())
+                    guid_item.setToolTip("\n".join(entry.guids))
+                    self.table.setItem(index, 1, guid_item)
+                    latest = entry.latest_raw or ("none" if not entry.available else "")
+                    latest_key = (0 if entry.available else 1, version_sort_key(entry.latest_raw))
+                    self.table.setItem(index, 2, sortable_item(latest, latest_key))
+                    self.table.setItem(index, 3, sortable_item(status))
+                    self.table.setItem(index, 4, sortable_item(""))
+                    actions = QWidget()
+                    actions_layout = QHBoxLayout(actions)
+                    actions_layout.setContentsMargins(4, 0, 4, 0)
+                    actions_layout.addWidget(repo_button(entry.repo, actions))
+                    label, tip = catalog_pack_button(entry, self._pack)
+                    button = QPushButton(label)
+                    button.setEnabled(entry.available and self._pack is not None)
+                    if self._pack is None:
+                        button.setToolTip("Select a ModPack first")
+                    else:
+                        button.setToolTip(tip)
+                    guid = entry.primary_guid
+                    button.clicked.connect(lambda _=False, value=guid: self.install_requested.emit(value))
+                    actions_layout.addWidget(button)
+                    self.table.setCellWidget(index, 4, actions)
+                    self._enable_row_context_menu(actions, guid)
+                    if entry.primary_guid == self._revealed_guid or self._revealed_guid in entry.guids:
+                        _paint_row(
+                            self.table,
+                            index,
+                            revealed_bg,
+                            actions,
+                            revealed_fg,
+                        )
+                    elif _pinned_for_entry(entry, self._pack) is not None:
+                        _paint_row(self.table, index, in_pack_bg, actions)
+        finally:
+            self._syncing_table = False
 
     def reveal_mod(self, guid: str, repo: str = "") -> bool:
         target = _entry_for_mod(self._entries, guid, repo)
@@ -163,14 +169,43 @@ class CatalogView(QWidget):
         row = self._row_for_guid(self._revealed_guid)
         if row < 0:
             return False
-        self.table.setFocus(Qt.FocusReason.OtherFocusReason)
-        self.table.clearSelection()
-        self.table.selectRow(row)
-        self.table.setCurrentCell(row, 0)
-        item = self.table.item(row, 0) or self.table.item(row, 1)
-        if item is not None:
-            self.table.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self._syncing_table = True
+        try:
+            self.table.setFocus(Qt.FocusReason.OtherFocusReason)
+            self.table.clearSelection()
+            self.table.selectRow(row)
+            self.table.setCurrentCell(row, 0)
+            item = self.table.item(row, 0) or self.table.item(row, 1)
+            if item is not None:
+                self.table.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        finally:
+            self._syncing_table = False
         return True
+
+    def _on_selection_changed(self) -> None:
+        if self._syncing_table or not self._revealed_guid:
+            return
+        row = self.table.currentRow()
+        if row >= 0 and (
+            self._guid_at_row(row) == self._revealed_guid
+            or self._row_for_guid(self._revealed_guid) == row
+        ):
+            return
+        self._clear_revealed_highlight()
+
+    def _clear_revealed_highlight(self) -> None:
+        guid = self._revealed_guid
+        if not guid:
+            return
+        row = self._row_for_guid(guid)
+        self._revealed_guid = ""
+        if row < 0:
+            return
+        actions = self.table.cellWidget(row, 4)
+        _clear_row_paint(self.table, row, actions)
+        entry = _entry_for_mod(self._entries, guid)
+        if entry is not None and _pinned_for_entry(entry, self._pack) is not None and actions is not None:
+            _paint_row(self.table, row, _in_pack_row_background(self.table), actions)
 
     def _row_for_guid(self, guid: str) -> int:
         if not guid:
@@ -324,6 +359,16 @@ def _entry_for_mod(entries: list[CatalogEntry], guid: str, repo: str = "") -> Ca
             if same_repo(entry.repo, repo):
                 return entry
     return None
+
+
+def _clear_row_paint(table: QTableWidget, row: int, actions: QWidget | None) -> None:
+    for column in range(table.columnCount()):
+        item = table.item(row, column)
+        if item is not None:
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)
+            item.setData(Qt.ItemDataRole.ForegroundRole, None)
+    if actions is not None:
+        actions.setAutoFillBackground(False)
 
 
 def _paint_row(

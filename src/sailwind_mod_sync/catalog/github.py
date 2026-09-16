@@ -13,6 +13,12 @@ from sailwind_mod_sync.paths import AppPaths
 
 log = logging.getLogger(__name__)
 
+GITHUB_DOWNLOAD_HELP_TITLE = "Could not download from GitHub"
+_GITHUB_DOWNLOAD_PATH = re.compile(
+    r"^(https://github\.com/[^/]+/[^/]+)/releases/download/([^/]+)/",
+    re.I,
+)
+
 GITHUB_RE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", re.I)
 GITLAB_RE = re.compile(r"^https?://gitlab\.com/(.+?)(?:\.git)?/?$", re.I)
 _GIT_PATH_STOP = {
@@ -170,6 +176,110 @@ def pick_release_asset(
     return max(usable, key=score)
 
 
+class GitHubDownloadError(RuntimeError):
+    """Failed or truncated GitHub asset download, with manual-import instructions."""
+
+    title = GITHUB_DOWNLOAD_HELP_TITLE
+
+    @staticmethod
+    def is_help_text(text: str) -> bool:
+        return "Import Mod DLL/ZIP" in (text or "")
+
+
+def github_release_page_url(download_url: str, release_url: str = "", repo_url: str = "") -> str:
+    if (release_url or "").strip():
+        return release_url.strip()
+    match = _GITHUB_DOWNLOAD_PATH.match((download_url or "").strip())
+    if match:
+        return f"{match.group(1)}/releases/tag/{match.group(2)}"
+    return (repo_url or "").strip()
+
+
+def github_manual_download_help(
+    *,
+    asset_name: str,
+    download_url: str = "",
+    release_url: str = "",
+    repo_url: str = "",
+    reason: str = "",
+) -> str:
+    name = asset_name or "the mod file"
+    page = github_release_page_url(download_url, release_url, repo_url)
+    lines = [
+        f"Could not finish downloading {name} from GitHub.",
+        "",
+        "Download it in your browser, then add it in Sailwind Mod Synchronizer:",
+    ]
+    if page:
+        lines.append(f"1. Open the GitHub release page:\n   {page}")
+    else:
+        lines.append("1. Open the mod's GitHub Releases page.")
+    lines.extend(
+        [
+            f"2. Download {name} (or the matching .zip / .dll).",
+            "3. In this app, click Import Mod DLL/ZIP on the Pack tab",
+            "   (or Download Management → Import mod file…) and choose that file.",
+        ]
+    )
+    if reason:
+        lines.extend(["", f"Details: {reason}"])
+    return "\n".join(lines)
+
+
+def download_release_asset(
+    http: HttpClient,
+    asset: ReleaseAsset,
+    dest: Path,
+    progress: ProgressFn | None = None,
+    *,
+    release_url: str = "",
+    repo_url: str = "",
+) -> None:
+    """Download a release file without sending the API token to GitHub's CDN.
+
+    Public ``browser_download_url`` links fail for large assets when Authorization
+    is attached. With a token, use the GitHub assets API instead (private repos
+    and files over ~50 MB).
+    """
+    url = asset.api_url if (http.token and asset.api_url) else asset.download_url
+    if not url:
+        raise FileNotFoundError(f"Release asset {asset.name!r} has no download URL")
+    try:
+        http.download(url, dest, progress=progress)
+        _verify_downloaded_asset(dest, asset)
+    except GitHubDownloadError:
+        raise
+    except Exception as exc:
+        _remove_if_exists(dest)
+        raise GitHubDownloadError(
+            github_manual_download_help(
+                asset_name=asset.name,
+                download_url=asset.download_url,
+                release_url=release_url,
+                repo_url=repo_url,
+                reason=str(exc).strip() or type(exc).__name__,
+            )
+        ) from exc
+
+
+def _verify_downloaded_asset(dest: Path, asset: ReleaseAsset) -> None:
+    if not dest.is_file() or dest.stat().st_size <= 0:
+        raise HttpError(f"Download of {asset.name or dest.name} was empty")
+    expected = int(asset.size or 0)
+    actual = dest.stat().st_size
+    if expected > 0 and actual != expected:
+        raise HttpError(
+            f"Incomplete download of {asset.name or dest.name}: got {actual} of {expected} bytes"
+        )
+
+
+def _remove_if_exists(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        log.warning("Could not delete incomplete download %s", path)
+
+
 def fetch_release(
     http: HttpClient,
     repo_url: str,
@@ -255,6 +365,7 @@ def _parse_github_payload(data: dict) -> RemoteRelease:
             name=str(item.get("name") or ""),
             download_url=str(item.get("browser_download_url") or ""),
             size=int(item.get("size") or 0),
+            api_url=str(item.get("url") or ""),
         )
         for item in data.get("assets") or []
         if item.get("browser_download_url")

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailwind_mod_sync.catalog.custom import same_repo
+from sailwind_mod_sync.catalog.github import GitHubDownloadError
 from sailwind_mod_sync.catalog.mvc import find_entry
 from sailwind_mod_sync.constants import APP_NAME, APP_REPO, APP_VERSION
 from sailwind_mod_sync.game.backup import BackupError, inspect_bepinex_zip
@@ -39,6 +40,7 @@ from sailwind_mod_sync.ui.catalog_view import CatalogView
 from sailwind_mod_sync.ui.downloads_window import DownloadsWindow
 from sailwind_mod_sync.ui.hidden_mods_dialog import HiddenModsDialog
 from sailwind_mod_sync.ui.launch_splash import LaunchSplash
+from sailwind_mod_sync.ui.links import help_text_to_html
 from sailwind_mod_sync.ui.mod_details_dialog import ModDetailsDialog
 from sailwind_mod_sync.ui.missing_mods_dialog import MissingModsWarningDialog
 from sailwind_mod_sync.ui.pack_view import PackView
@@ -1411,6 +1413,17 @@ class MainWindow(QMainWindow):
         self._clear_busy()
         text = (message or "").strip() or "The task failed."
         log.error("UI task failed: %s", text)
-        QMessageBox.critical(self, "Error", text)
+        if GitHubDownloadError.is_help_text(text):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(GitHubDownloadError.title)
+            box.setTextFormat(Qt.TextFormat.RichText)
+            box.setText(help_text_to_html(text))
+            for label in box.findChildren(QLabel):
+                label.setOpenExternalLinks(True)
+                label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            box.exec()
+        else:
+            QMessageBox.critical(self, "Error", text)
         self.statusBar().showMessage(text)
         self._reload_views()

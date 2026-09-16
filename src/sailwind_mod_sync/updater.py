@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 EXE_NAME = "SailwindModSynchronizer.exe"
 _TRUSTED_HOSTS = {
     "github.com",
+    "api.github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 }
@@ -117,11 +118,13 @@ def find_app_update(
     asset = pick_update_asset(release.assets)
     download_url = ""
     asset_name = ""
-    if asset and _trusted_download_url(asset.download_url):
-        download_url = asset.download_url
-        asset_name = asset.name
-    elif asset:
-        log.warning("Rejected untrusted update URL %s", asset.download_url)
+    if asset:
+        target = asset.api_url if (http.token and asset.api_url) else asset.download_url
+        if _trusted_download_url(target):
+            download_url = target
+            asset_name = asset.name
+        else:
+            log.warning("Rejected untrusted update URL %s", target)
     return AppUpdate(
         version=version,
         version_raw=release.tag or version,
@@ -210,9 +213,12 @@ def _payload_root(extracted: Path) -> Path:
 
 
 def _trusted_download_url(url: str) -> bool:
-    host = urlparse(url).netloc.lower()
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
     if host.startswith("www."):
         host = host[4:]
+    if host == "api.github.com":
+        return "/releases/assets/" in parsed.path.lower()
     if host in _TRUSTED_HOSTS:
         return True
     return host.endswith(".githubusercontent.com")

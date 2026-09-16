@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 from collections.abc import Callable
 
 from PySide6.QtCore import QUrl
@@ -7,6 +9,26 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QPushButton, QWidget
 
 from sailwind_mod_sync.catalog.github import repo_page_url
+
+_HTTP_URL_RE = re.compile(r"https://[^\s<>]+")
+
+
+def help_text_to_html(text: str) -> str:
+    """Escape help text and turn https URLs into clickable links."""
+    raw = text or ""
+    parts: list[str] = []
+    last = 0
+    for match in _HTTP_URL_RE.finditer(raw):
+        parts.append(html.escape(raw[last:match.start()]).replace("\n", "<br>\n"))
+        full = match.group(0)
+        url = full.rstrip(".,);]")
+        safe = html.escape(url, quote=True)
+        parts.append(f'<a href="{safe}">{html.escape(url)}</a>')
+        if len(full) > len(url):
+            parts.append(html.escape(full[len(url):]))
+        last = match.end()
+    parts.append(html.escape(raw[last:]).replace("\n", "<br>\n"))
+    return "".join(parts)
 
 
 def repo_button(repo: str, parent: QWidget | None = None) -> QPushButton:

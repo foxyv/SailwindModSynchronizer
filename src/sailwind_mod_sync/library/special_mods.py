@@ -9,8 +9,14 @@ COOP_REPO = "https://github.com/DiamondMiner99/sailwind-coop"
 COOP_PLUGIN_FOLDER = "SailwindCoop"
 STEAM_API_DLL = "steam_api64.dll"
 
+FAIL_DOWNLOAD_GUID = "com.sms.test.faildownload"
+FAIL_DOWNLOAD_REPO = "https://github.com/foxyv/SailwindModSynchronizer"
+FAIL_DOWNLOAD_ASSET = "BrokenDownloadTest.zip"
+FAIL_DOWNLOAD_VERSION = "0.0.1"
+
 KNOWN_MOD_REPOS = {
     COOP_GUID: COOP_REPO,
+    FAIL_DOWNLOAD_GUID: FAIL_DOWNLOAD_REPO,
 }
 
 
@@ -24,6 +30,10 @@ def known_repo_for(guid: str) -> str | None:
 
 def is_coop_guid(guid: str) -> bool:
     return (guid or "").strip().lower() == COOP_GUID.lower()
+
+
+def is_fail_download_guid(guid: str) -> bool:
+    return (guid or "").strip().lower() == FAIL_DOWNLOAD_GUID.lower()
 
 
 def coop_steam_api_present(extracted: Path) -> bool:

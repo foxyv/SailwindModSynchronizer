@@ -1,6 +1,10 @@
 from sailwind_mod_sync.catalog.github import (
+    GitHubDownloadError,
+    download_release_asset,
     fetch_readme,
     fetch_release,
+    github_manual_download_help,
+    github_release_page_url,
     list_releases,
     pick_release_asset,
     pick_zip_asset,
@@ -145,6 +149,150 @@ def test_pick_release_prefers_zip_over_dll() -> None:
     ]
     chosen = pick_release_asset(assets, "pr0skynesis.cookedinfo", "CookedInfo-Sailwind-Mod")
     assert chosen.name == "CookedInfo.zip"
+
+
+def test_parse_github_release_keeps_api_asset_url() -> None:
+    payload = {
+        "tag_name": "v1.0.0",
+        "name": "v1.0.0",
+        "html_url": "https://github.com/example/mod/releases/tag/v1.0.0",
+        "assets": [
+            {
+                "name": "HugeMod.zip",
+                "url": "https://api.github.com/repos/example/mod/releases/assets/99",
+                "browser_download_url": "https://github.com/example/mod/releases/download/v1.0.0/HugeMod.zip",
+                "size": 80_000_000,
+            }
+        ],
+    }
+
+    class _Http:
+        def get_json(self, url, extra_headers=None, etag=None):
+            return payload, None, False
+
+    release = fetch_release(_Http(), "https://github.com/example/mod", tag="v1.0.0")
+    assert release.assets[0].download_url.endswith("HugeMod.zip")
+    assert release.assets[0].api_url.endswith("/releases/assets/99")
+    assert release.assets[0].size == 80_000_000
+
+
+def test_download_release_asset_uses_api_url_when_tokened(tmp_path) -> None:
+    from pathlib import Path
+    from sailwind_mod_sync.http_util import HttpClient
+
+    class _Http(HttpClient):
+        def __init__(self, token: str) -> None:
+            self.token = token
+            self._owns_client = False
+            self._client = None
+            self.urls: list[str] = []
+
+        def download(self, url: str, dest: Path, progress=None) -> None:
+            self.urls.append(url)
+            dest.write_bytes(b"ok")
+
+    asset = ReleaseAsset(
+        "HugeMod.zip",
+        "https://github.com/example/mod/releases/download/v1.0.0/HugeMod.zip",
+        api_url="https://api.github.com/repos/example/mod/releases/assets/99",
+    )
+    dest = tmp_path / "HugeMod.zip"
+    authed = _Http("ghs_secret")
+    download_release_asset(authed, asset, dest)
+    assert authed.urls == ["https://api.github.com/repos/example/mod/releases/assets/99"]
+    anon = _Http("")
+    download_release_asset(anon, asset, dest)
+    assert anon.urls == ["https://github.com/example/mod/releases/download/v1.0.0/HugeMod.zip"]
+
+
+def test_github_release_page_url_from_browser_download() -> None:
+    assert github_release_page_url(
+        "https://github.com/example/mod/releases/download/v1.2.0/HugeMod.zip"
+    ) == "https://github.com/example/mod/releases/tag/v1.2.0"
+    assert github_release_page_url(
+        "",
+        release_url="https://github.com/example/mod/releases/tag/v9",
+    ) == "https://github.com/example/mod/releases/tag/v9"
+
+
+def test_github_manual_download_help_lists_import_steps() -> None:
+    text = github_manual_download_help(
+        asset_name="HugeMod.zip",
+        download_url="https://github.com/example/mod/releases/download/v1.0.0/HugeMod.zip",
+        reason="HTTP 403",
+    )
+    assert GitHubDownloadError.is_help_text(text)
+    assert "HugeMod.zip" in text
+    assert "https://github.com/example/mod/releases/tag/v1.0.0" in text
+    assert "Import Mod DLL/ZIP" in text
+    assert "HTTP 403" in text
+
+
+def test_download_release_asset_warns_on_http_error(tmp_path) -> None:
+    from pathlib import Path
+    from sailwind_mod_sync.http_util import HttpClient, HttpError
+
+    class _Http(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def download(self, url: str, dest: Path, progress=None) -> None:
+            dest.write_bytes(b"partial")
+            raise HttpError("HTTP 403 for github.com", status_code=403)
+
+    asset = ReleaseAsset(
+        "HugeMod.zip",
+        "https://github.com/example/mod/releases/download/v1.0.0/HugeMod.zip",
+        size=80_000_000,
+    )
+    dest = tmp_path / "HugeMod.zip"
+    try:
+        download_release_asset(
+            _Http(),
+            asset,
+            dest,
+            release_url="https://github.com/example/mod/releases/tag/v1.0.0",
+        )
+    except GitHubDownloadError as exc:
+        text = str(exc)
+    else:
+        raise AssertionError("expected GitHubDownloadError")
+    assert GitHubDownloadError.is_help_text(text)
+    assert "HTTP 403" in text
+    assert "https://github.com/example/mod/releases/tag/v1.0.0" in text
+    assert not dest.exists()
+
+
+def test_download_release_asset_warns_on_short_file(tmp_path) -> None:
+    from pathlib import Path
+    from sailwind_mod_sync.http_util import HttpClient
+
+    class _Http(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def download(self, url: str, dest: Path, progress=None) -> None:
+            dest.write_bytes(b"short")
+
+    asset = ReleaseAsset(
+        "HugeMod.zip",
+        "https://github.com/example/mod/releases/download/v1.0.0/HugeMod.zip",
+        size=50_000_001,
+    )
+    dest = tmp_path / "HugeMod.zip"
+    try:
+        download_release_asset(_Http(), asset, dest, repo_url="https://github.com/example/mod")
+    except GitHubDownloadError as exc:
+        text = str(exc)
+    else:
+        raise AssertionError("expected GitHubDownloadError")
+    assert "Incomplete download" in text
+    assert "Import Mod DLL/ZIP" in text
+    assert not dest.exists()
 
 
 class _GithubListHttp:

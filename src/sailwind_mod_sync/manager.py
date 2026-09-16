@@ -16,6 +16,7 @@ from sailwind_mod_sync.catalog.custom import (
 )
 from sailwind_mod_sync.catalog.github import (
     canonicalize_repo_url,
+    download_release_asset,
     fetch_readme,
     fetch_release,
     list_releases,
@@ -264,7 +265,14 @@ class Manager:
                 dest = Path(tmp) / (asset.name or f"artifact-{index}")
                 if progress:
                     progress(f"Reading {asset.name}…")
-                self.http.download(asset.download_url, dest, progress=progress)
+                download_release_asset(
+                    self.http,
+                    asset,
+                    dest,
+                    progress=progress,
+                    release_url=release.html_url,
+                    repo_url=repo,
+                )
                 hints = (ref.repo, asset.name or "")
                 discovered.extend(discover_local_file(dest, catalog=self.catalog, hints=hints))
         custom = load_custom_catalog(self.paths)

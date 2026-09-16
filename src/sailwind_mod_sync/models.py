@@ -252,6 +252,7 @@ class ReleaseAsset:
     name: str
     download_url: str
     size: int = 0
+    api_url: str = ""
 
 
 @dataclass
