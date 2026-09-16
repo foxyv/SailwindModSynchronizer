@@ -3,15 +3,12 @@ from __future__ import annotations
 import subprocess
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -25,7 +22,8 @@ from sailwind_mod_sync.game.wait_window import (
     sailwind_window_visible,
     window_hwnd_for_pid,
 )
-from sailwind_mod_sync.resources import icon_path
+from sailwind_mod_sync.resources import load_icon_pixmap
+from sailwind_mod_sync.ui.sailboat_scene import SailboatScene
 
 POLL_MS = 250
 OPENED_GRACE_MS = 400
@@ -48,13 +46,13 @@ class LaunchSplash(QDialog):
         process: subprocess.Popen | None = None,
         *,
         heading: str,
-        log_paths: list[Path] | None = None,
         has_window: Callable[[int], bool] | None = None,
         window_probe: Callable[[], bool] | None = None,
         find_hwnd: Callable[[], int | None] | None = None,
         focus_hwnd: Callable[[int], bool] | None = None,
         clock: Callable[[], float] | None = None,
         focus_delay_ms: int = FOCUS_AFTER_CLOSE_MS,
+        preview: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Starting Sailwind")
@@ -62,34 +60,30 @@ class LaunchSplash(QDialog):
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        self.resize(560, 420)
+        self.resize(560, 400)
+        self._preview = preview
         self._process = process
         self._has_window = has_window or process_has_visible_window
-        self._window_probe = window_probe or sailwind_window_visible
+        probe = window_probe
+        if preview and probe is None:
+            probe = lambda: False
+        self._window_probe = probe or sailwind_window_visible
         self._find_hwnd = find_hwnd
-        self._use_native_hwnd = find_hwnd is None and has_window is None and window_probe is None
+        self._use_native_hwnd = (
+            not preview and find_hwnd is None and has_window is None and window_probe is None
+        )
         self._focus_hwnd = focus_hwnd or focus_window
         self._focus_delay_ms = max(0, int(focus_delay_ms))
         self._clock = clock or time.monotonic
         self._started = self._clock()
         self._opened = False
         self._game_hwnd = 0
-        self._log_paths = [Path(path) for path in log_paths or []]
-        self._offsets = {
-            path: path.stat().st_size if path.is_file() else 0 for path in self._log_paths
-        }
 
         icon = QLabel()
         icon.setFixedSize(72, 72)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image = icon_path()
-        if image is not None:
-            pix = QPixmap(str(image)).scaled(
-                72,
-                72,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        pix = load_icon_pixmap(72, icon.devicePixelRatioF())
+        if pix is not None:
             icon.setPixmap(pix)
 
         self._heading = QLabel(heading)
@@ -114,15 +108,7 @@ class LaunchSplash(QDialog):
         self._bar.setRange(0, 0)
         self._bar.setTextVisible(False)
 
-        self._log = QPlainTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setMaximumBlockCount(400)
-        self._log.setPlaceholderText("BepInEx log will appear here as Sailwind starts…")
-        font = QFont("Cascadia Mono")
-        if not font.exactMatch():
-            font = QFont("Consolas")
-        font.setPointSize(9)
-        self._log.setFont(font)
+        self._scene = SailboatScene(self)
 
         hide = QPushButton("Hide")
         hide.setToolTip("Hide this window. Sailwind will keep starting.")
@@ -133,7 +119,7 @@ class LaunchSplash(QDialog):
         layout.setSpacing(12)
         layout.addLayout(header)
         layout.addWidget(self._bar)
-        layout.addWidget(self._log, 1)
+        layout.addWidget(self._scene, 1)
         buttons = QHBoxLayout()
         buttons.addStretch()
         buttons.addWidget(hide)
@@ -147,18 +133,9 @@ class LaunchSplash(QDialog):
     def set_status(self, text: str) -> None:
         self._status.setText(text)
 
-    def append_log(self, text: str) -> None:
-        chunk = text.replace("\r\n", "\n").replace("\r", "\n")
-        if not chunk:
-            return
-        self._log.moveCursor(QTextCursor.MoveOperation.End)
-        self._log.insertPlainText(chunk)
-        self._log.moveCursor(QTextCursor.MoveOperation.End)
-
     def _tick(self) -> None:
         if self._opened:
             return
-        self._read_logs()
         opened = False
         if self._process is not None:
             code = self._process.poll()
@@ -191,6 +168,7 @@ class LaunchSplash(QDialog):
             )
 
     def done(self, result: int) -> None:
+        self._scene.stop()
         hwnd = self._game_hwnd if self._opened else 0
         self._game_hwnd = 0
         if hwnd:
@@ -213,22 +191,3 @@ class LaunchSplash(QDialog):
             pid = int(getattr(self._process, "pid", 0) or 0)
             return int(window_hwnd_for_pid(pid) or 0)
         return int(sailwind_window_hwnd() or 0)
-
-    def _read_logs(self) -> None:
-        for path in self._log_paths:
-            try:
-                if not path.is_file():
-                    continue
-                size = path.stat().st_size
-                offset = self._offsets.get(path, 0)
-                if size < offset:
-                    offset = 0
-                if size == offset:
-                    continue
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
-                    handle.seek(offset)
-                    chunk = handle.read()
-                    self._offsets[path] = handle.tell()
-                self.append_log(chunk)
-            except OSError:
-                continue

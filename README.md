@@ -64,3 +64,7 @@ Signing reads `%USERPROFILE%\sms-signing\metadata.json` (copy [scripts/signing.m
 Pass `--skip-sign` / `-SkipSign` for an unsigned zip. Incremental builds do not sign unless you pass `--sign`.
 
 Both modes compile `dist\SailwindModSynchronizer\SailwindModSynchronizer.exe`, embed `assets/icon.png` as the application icon, and create a **Sailwind Mod Synchronizer** shortcut on the Desktop unless you pass `-SkipShortcut` / `--skip-shortcut`.
+
+## License
+
+This project is under the [MIT License](LICENSE). You may copy, modify, redistribute, and sell it, as long as you keep the copyright and license notice.

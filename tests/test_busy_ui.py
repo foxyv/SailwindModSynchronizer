@@ -811,7 +811,21 @@ def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
         )
         items = [action.text().replace("&", "") for action in help_menu.actions()]
         assert "Check for updates…" in items
+        assert "Test splash screen" in items
         assert "About" in items
+        test_splash = next(
+            action
+            for action in help_menu.actions()
+            if action.text().replace("&", "") == "Test splash screen"
+        )
+        test_splash.trigger()
+        preview = window._launch_splash
+        assert preview is not None
+        assert preview._preview is True
+        assert preview._opened is False
+        preview.close()
+        preview.deleteLater()
+        window._launch_splash = None
         assert window.windowTitle().startswith("Sailwind Mod Synchronizer")
         assert [window.tabs.tabText(index) for index in range(window.tabs.count())] == [
             "Pack",

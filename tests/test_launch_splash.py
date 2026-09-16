@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QWidget
@@ -8,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QWidget
 from sailwind_mod_sync.game.wait_window import focus_window, process_has_visible_window
 from sailwind_mod_sync.ui.launch_splash import LaunchSplash
 from sailwind_mod_sync.ui.progress_dialog import BusyDialog
+from sailwind_mod_sync.ui.sailboat_scene import SailboatScene
 
 
 class _FakeProcess:
@@ -29,14 +29,12 @@ def test_focus_window_rejects_invalid_hwnd() -> None:
     assert focus_window(-1) is False
 
 
-def test_launch_splash_shows_heading_and_log(tmp_path: Path) -> None:
+def test_launch_splash_shows_heading_and_sailboat() -> None:
     app = QApplication.instance() or QApplication([])
-    log_path = tmp_path / "LogOutput.log"
     dialog = LaunchSplash(
         None,
         _FakeProcess(),
         heading="Starting Sailwind — Crew",
-        log_paths=[log_path],
         has_window=lambda _pid: False,
     )
     try:
@@ -44,13 +42,50 @@ def test_launch_splash_shows_heading_and_log(tmp_path: Path) -> None:
         labels = " ".join(label.text() for label in dialog.findChildren(QLabel))
         assert "Starting Sailwind — Crew" in labels
         assert "Waiting for the Sailwind window" in labels
-        assert dialog.findChildren(QPlainTextEdit)
-        log_path.write_text("[Info   :   BepInEx] Chainloader started\n", encoding="utf-8")
-        dialog._offsets[log_path] = 0
-        dialog._read_logs()
-        assert "Chainloader started" in dialog._log.toPlainText()
+        assert dialog.findChildren(SailboatScene)
+        assert not dialog.findChildren(QPlainTextEdit)
+        assert dialog._scene.running()
+        dialog._scene._advance()
+        assert dialog._scene.phase > 0
     finally:
         dialog._timer.stop()
+        dialog._scene.stop()
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_sailboat_scene_paints_and_bobs() -> None:
+    app = QApplication.instance() or QApplication([])
+    clock = SimpleNamespace(now=0.0)
+    scene = SailboatScene(clock=lambda: clock.now)
+    try:
+        scene.resize(420, 220)
+        clock.now = 0.05
+        scene._advance()
+        assert scene.phase > 0
+        image = scene.grab()
+        assert not image.isNull()
+        assert image.width() == 420
+        assert image.height() == 220
+    finally:
+        scene.stop()
+        scene.deleteLater()
+    app.processEvents()
+
+
+def test_launch_splash_preview_stays_open() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = LaunchSplash(None, None, heading="Starting Sailwind", preview=True)
+    try:
+        assert dialog._preview is True
+        assert dialog._opened is False
+        dialog._tick()
+        assert dialog._opened is False
+        assert dialog._timer.isActive()
+    finally:
+        dialog._timer.stop()
+        dialog._scene.stop()
         dialog.close()
         dialog.deleteLater()
     app.processEvents()
