@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit
+from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QWidget
 
-from sailwind_mod_sync.game.wait_window import process_has_visible_window
+from sailwind_mod_sync.game.wait_window import focus_window, process_has_visible_window
 from sailwind_mod_sync.ui.launch_splash import LaunchSplash
 from sailwind_mod_sync.ui.progress_dialog import BusyDialog
 
@@ -22,6 +22,11 @@ class _FakeProcess:
 def test_process_has_visible_window_rejects_invalid_pid() -> None:
     assert process_has_visible_window(0) is False
     assert process_has_visible_window(-1) is False
+
+
+def test_focus_window_rejects_invalid_hwnd() -> None:
+    assert focus_window(0) is False
+    assert focus_window(-1) is False
 
 
 def test_launch_splash_shows_heading_and_log(tmp_path: Path) -> None:
@@ -132,6 +137,82 @@ def test_busy_dialog_still_exists() -> None:
         assert "Preparing ModPack" in dialog._label.text()
         dialog.allow_close()
     finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_launch_splash_focuses_game_when_window_appears() -> None:
+    app = QApplication.instance() or QApplication([])
+    focused: list[int] = []
+    dialog = LaunchSplash(
+        None,
+        None,
+        heading="Starting Sailwind",
+        window_probe=lambda: True,
+        find_hwnd=lambda: 4242,
+        focus_hwnd=lambda hwnd: focused.append(hwnd) or True,
+        focus_delay_ms=0,
+    )
+    try:
+        assert dialog._opened is True
+        assert dialog._game_hwnd == 4242
+        dialog.accept()
+        app.processEvents()
+        assert focused == [4242]
+        assert dialog.parent() is None
+    finally:
+        dialog._timer.stop()
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_launch_splash_unparents_from_manager_when_game_opens() -> None:
+    app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    focused: list[int] = []
+    dialog = LaunchSplash(
+        parent,
+        None,
+        heading="Starting Sailwind",
+        window_probe=lambda: True,
+        find_hwnd=lambda: 99,
+        focus_hwnd=lambda hwnd: focused.append(hwnd) or True,
+        focus_delay_ms=0,
+    )
+    try:
+        dialog.accept()
+        app.processEvents()
+        assert dialog.parent() is None
+        assert focused == [99]
+    finally:
+        dialog._timer.stop()
+        dialog.close()
+        dialog.deleteLater()
+        parent.deleteLater()
+    app.processEvents()
+
+
+def test_launch_splash_hide_before_game_does_not_focus() -> None:
+    app = QApplication.instance() or QApplication([])
+    focused: list[int] = []
+    dialog = LaunchSplash(
+        None,
+        None,
+        heading="Starting Sailwind",
+        window_probe=lambda: False,
+        find_hwnd=lambda: 4242,
+        focus_hwnd=lambda hwnd: focused.append(hwnd) or True,
+        focus_delay_ms=0,
+    )
+    try:
+        assert dialog._opened is False
+        dialog.accept()
+        app.processEvents()
+        assert focused == []
+    finally:
+        dialog._timer.stop()
         dialog.close()
         dialog.deleteLater()
     app.processEvents()

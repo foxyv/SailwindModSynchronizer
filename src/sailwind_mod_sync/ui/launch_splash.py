@@ -18,11 +18,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailwind_mod_sync.game.wait_window import process_has_visible_window, sailwind_window_visible
+from sailwind_mod_sync.game.wait_window import (
+    focus_window,
+    process_has_visible_window,
+    sailwind_window_hwnd,
+    sailwind_window_visible,
+    window_hwnd_for_pid,
+)
 from sailwind_mod_sync.resources import icon_path
 
 POLL_MS = 250
 OPENED_GRACE_MS = 400
+FOCUS_AFTER_CLOSE_MS = 50
 GIVE_UP_SECONDS = 90
 
 
@@ -31,6 +38,8 @@ class LaunchSplash(QDialog):
 
     ``process`` may be None when the game was handed off to Steam; in that case a
     desktop-wide window probe recognizes Sailwind instead of tracking a pid.
+    When the game window appears, the splash closes and focuses that window so
+    the manager does not steal keyboard focus back.
     """
 
     def __init__(
@@ -42,7 +51,10 @@ class LaunchSplash(QDialog):
         log_paths: list[Path] | None = None,
         has_window: Callable[[int], bool] | None = None,
         window_probe: Callable[[], bool] | None = None,
+        find_hwnd: Callable[[], int | None] | None = None,
+        focus_hwnd: Callable[[int], bool] | None = None,
         clock: Callable[[], float] | None = None,
+        focus_delay_ms: int = FOCUS_AFTER_CLOSE_MS,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Starting Sailwind")
@@ -54,9 +66,14 @@ class LaunchSplash(QDialog):
         self._process = process
         self._has_window = has_window or process_has_visible_window
         self._window_probe = window_probe or sailwind_window_visible
+        self._find_hwnd = find_hwnd
+        self._use_native_hwnd = find_hwnd is None and has_window is None and window_probe is None
+        self._focus_hwnd = focus_hwnd or focus_window
+        self._focus_delay_ms = max(0, int(focus_delay_ms))
         self._clock = clock or time.monotonic
         self._started = self._clock()
         self._opened = False
+        self._game_hwnd = 0
         self._log_paths = [Path(path) for path in log_paths or []]
         self._offsets = {
             path: path.stat().st_size if path.is_file() else 0 for path in self._log_paths
@@ -160,6 +177,7 @@ class LaunchSplash(QDialog):
             opened = self._window_probe()
         if opened:
             self._opened = True
+            self._game_hwnd = self._resolve_hwnd()
             self._timer.stop()
             self._bar.setRange(0, 1)
             self._bar.setValue(1)
@@ -171,6 +189,30 @@ class LaunchSplash(QDialog):
             self.set_status(
                 "Sailwind is taking a long time. You can hide this window; the game may still open."
             )
+
+    def done(self, result: int) -> None:
+        hwnd = self._game_hwnd if self._opened else 0
+        self._game_hwnd = 0
+        if hwnd:
+            # Closing a child dialog would otherwise activate the manager.
+            self.hide()
+            self.setParent(None)
+        super().done(result)
+        if hwnd:
+            QTimer.singleShot(self._focus_delay_ms, lambda h=hwnd: self._focus_hwnd(h))
+
+    def _resolve_hwnd(self) -> int:
+        if self._find_hwnd is not None:
+            try:
+                return int(self._find_hwnd() or 0)
+            except (TypeError, ValueError):
+                return 0
+        if not self._use_native_hwnd:
+            return 0
+        if self._process is not None:
+            pid = int(getattr(self._process, "pid", 0) or 0)
+            return int(window_hwnd_for_pid(pid) or 0)
+        return int(sailwind_window_hwnd() or 0)
 
     def _read_logs(self) -> None:
         for path in self._log_paths:
