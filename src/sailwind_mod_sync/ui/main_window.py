@@ -274,6 +274,9 @@ class MainWindow(QMainWindow):
         help_menu = self.menuBar().addMenu("Help")
         check_updates = help_menu.addAction("Check for updates…")
         check_updates.triggered.connect(self._check_for_updates)
+        test_splash = help_menu.addAction("Test splash screen")
+        test_splash.setStatusTip("Show the Play splash without launching Sailwind")
+        test_splash.triggered.connect(self._test_splash)
         about = help_menu.addAction("About")
         about.triggered.connect(self._about)
         self.statusBar().showMessage("Ready")
@@ -387,6 +390,7 @@ class MainWindow(QMainWindow):
             (
                 f"{APP_NAME} {APP_VERSION}\n\n"
                 "Keeps Sailwind vanilla and launches isolated Doorstop ModPacks.\n\n"
+                "MIT License — copy, modify, redistribute, or sell freely.\n\n"
                 f"{APP_REPO}"
             ),
         )
@@ -1427,28 +1431,41 @@ class MainWindow(QMainWindow):
         pack = self.manager.packs.get(pack_id) if pack_id else None
         if pack is not None:
             heading = f"Starting Sailwind — {pack.name}"
-        logs: list[Path] = []
-        game = self.manager.game_dir()
-        if game is not None:
-            logs.append(game / "BepInEx" / "LogOutput.log")
-        if pack_id:
-            logs.append(self.manager.packs.instance_dir(pack_id) / "BepInEx" / "LogOutput.log")
+        self._open_launch_splash(
+            LaunchSplash(self, process, heading=heading),
+            status="Waiting for Steam to open Sailwind…",
+        )
+
+    def _test_splash(self) -> None:
+        heading = "Starting Sailwind"
+        pack_id = self.current_pack_id()
+        pack = self.manager.packs.get(pack_id) if pack_id else None
+        if pack is not None:
+            heading = f"Starting Sailwind — {pack.name}"
+        self._open_launch_splash(
+            LaunchSplash(self, None, heading=heading, preview=True),
+            status="Splash preview — click Hide to close",
+        )
+
+    def _open_launch_splash(self, splash: LaunchSplash, *, status: str) -> None:
         previous = self._launch_splash
         if previous is not None:
             previous.close()
             previous.deleteLater()
-        splash = LaunchSplash(self, process, heading=heading, log_paths=logs)
         self._launch_splash = splash
         splash.finished.connect(lambda _=0: self._launch_splash_closed(splash))
         splash.show()
         splash.raise_()
         splash.activateWindow()
-        self.statusBar().showMessage("Waiting for Steam to open Sailwind…")
+        self.statusBar().showMessage(status)
 
     def _launch_splash_closed(self, splash: LaunchSplash) -> None:
         if self._launch_splash is splash:
             self._launch_splash = None
-            self.statusBar().showMessage("Sailwind launched")
+            if splash._preview:
+                self.statusBar().showMessage("Ready")
+            else:
+                self.statusBar().showMessage("Sailwind launched")
 
     def _run(self, fn, on_ok, busy_message: str) -> None:
         if self._busy:
