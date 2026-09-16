@@ -96,6 +96,18 @@ QPushButton:disabled {
 }
 """
 
+UPDATES_HINT_STYLE = """
+QLabel {
+    color: #ffffff;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background-color: #2e7d32;
+    margin-right: 2px;
+    margin-bottom: 1px;
+}
+"""
+
 
 class MainWindow(QMainWindow):
     def __init__(self, manager: Manager) -> None:
@@ -112,6 +124,11 @@ class MainWindow(QMainWindow):
         self._mod_scan_running = False
         self._mod_scan_done_at = float("-inf")
         self._mod_scan_bridge: TaskBridge | None = None
+
+        self._updates_hint = QLabel(self.statusBar())
+        self._updates_hint.setStyleSheet(UPDATES_HINT_STYLE)
+        self._updates_hint.hide()
+        self.statusBar().addPermanentWidget(self._updates_hint)
 
         self.pack_list = QListWidget()
         self.pack_list.currentItemChanged.connect(self._on_pack_selected)
@@ -337,6 +354,16 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Game: {game}")
         else:
             self.statusBar().showMessage("Set the Sailwind folder in Settings")
+        self._update_pack_updates_hint()
+
+    def _update_pack_updates_hint(self) -> None:
+        count = self.pack_view.available_updates()
+        if count:
+            label = "1 mod update available" if count == 1 else f"{count} mod updates available"
+            self._updates_hint.setText(label)
+            self._updates_hint.show()
+        else:
+            self._updates_hint.hide()
 
     def _on_pack_selected(self) -> None:
         pack_id = self.current_pack_id()
