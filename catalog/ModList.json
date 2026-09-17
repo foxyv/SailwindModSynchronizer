@@ -7,7 +7,7 @@
   },
   {
     "guid": "com.winter.betterports",
-    "repo": "https://github.com/winterspices/CustomIslandAPI",
+    "repo": "https://github.com/winterspices/BetterPorts",
     "name": "Better Ports",
     "plugin_folders": ["Better Ports"]
   },
