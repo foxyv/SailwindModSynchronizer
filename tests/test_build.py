@@ -13,7 +13,7 @@ def _load_build():
     return module
 
 
-def test_default_build_is_incremental() -> None:
+def test_default_build_runs_pyinstaller() -> None:
     build = _load_build()
     args = build.parse_args([])
     assert args.release is False
@@ -21,6 +21,13 @@ def test_default_build_is_incremental() -> None:
     assert "--clean" not in freeze
     assert "--noupx" in freeze
     assert "--noconfirm" in freeze
+    pairs = list(zip(freeze, freeze[1:]))
+    assert ("--paths", str(build.REPO_ROOT / "src")) in pairs
+    assert ("--hidden-import", "sailwind_mod_sync.app") in pairs
+    assert ("--hidden-import", "logging.handlers") in pairs
+    assert ("--exclude-module", "sailwind_mod_sync") not in pairs
+    assert any(str(build.FREEZE_ENTRY) == item for item in freeze)
+    assert not any("sms-src" in item for item in freeze)
 
 
 def test_release_build_cleans_cache() -> None:
@@ -39,8 +46,10 @@ def test_release_implies_sign() -> None:
     assert args.sign is True
     skipped = build.parse_args(["--release", "--skip-sign"])
     assert skipped.sign is False
-    incremental = build.parse_args([])
-    assert incremental.sign is False
+    default = build.parse_args([])
+    assert default.sign is False
+    ignored_full = build.parse_args(["--full"])
+    assert ignored_full.release is False
     explicit = build.parse_args(["--sign"])
     assert explicit.sign is True
 
@@ -135,3 +144,18 @@ def test_sign_files_batches(tmp_path: Path, monkeypatch) -> None:
     assert str(metadata) in calls[0]
     assert str(files[0]) in calls[0]
     assert str(files[-1]) in calls[1]
+
+
+def test_skip_collect_path_drops_qml_and_translations() -> None:
+    build = _load_build()
+    assert build.skip_collect_path("PySide6/Qt6Qml.dll") is True
+    assert build.skip_collect_path("PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll") is True
+    assert build.skip_collect_path("PySide6/translations/qt_en.qm") is True
+    assert build.skip_collect_path("PySide6/Qt6Widgets.dll") is False
+    assert build.skip_collect_path("PySide6/Qt6Core.dll") is False
+
+
+def test_freeze_entry_loads_app_directly() -> None:
+    text = (Path(__file__).resolve().parents[1] / "scripts" / "freeze_entry.py").read_text(encoding="utf-8")
+    assert "from sailwind_mod_sync.app import main" in text
+    assert "OverlayFinder" not in text

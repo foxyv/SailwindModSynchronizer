@@ -6,7 +6,7 @@ title Rebuild Sailwind Mod Synchronizer
 echo.
 echo Rebuilding Sailwind Mod Synchronizer...
 echo Working folder: %CD%
-echo Incremental freeze (cache reused). For a GitHub zip: rebuild.bat release
+echo Full PyInstaller freeze. For a GitHub zip: rebuild.bat release
 echo.
 
 taskkill /IM SailwindModSynchronizer.exe /F >nul 2>&1
@@ -28,6 +28,7 @@ if /I "%~1"=="release" (
     echo Release freeze: clean PyInstaller cache and write a GitHub zip.
     "%PY%" scripts\build.py --skip-shortcut --release
 ) else (
+    echo Full freeze: PyInstaller with parallel collect.
     "%PY%" scripts\build.py --skip-shortcut
 )
 set "ERR=%ERRORLEVEL%"

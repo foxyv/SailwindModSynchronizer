@@ -84,6 +84,35 @@ def test_parse_compressed_token_with_newlines(monkeypatch) -> None:
     assert parsed["mods"][0]["version"] == "0.3.3"
 
 
+def test_share_payload_includes_badge() -> None:
+    from sailwind_mod_sync.models import PackBadge
+
+    pack = _sample_pack()
+    pack.badge = PackBadge(shape=2, icon=0, edge=(255, 255, 255), fill=(22, 50, 79), mark=(232, 197, 71))
+    payload = pack_share_payload(pack)
+    assert payload["badge"] == {
+        "shape": 2,
+        "icon": 0,
+        "edge": [255, 255, 255],
+        "fill": [22, 50, 79],
+        "mark": [232, 197, 71],
+        "ink": [244, 239, 232],
+        "scale": 56,
+    }
+    parsed = parse_share_text(encode_pack_share(pack))
+    assert parsed["badge"]["edge"] == [255, 255, 255]
+    assert "png" not in parsed["badge"]
+
+
+def test_share_payload_omits_custom_png() -> None:
+    from sailwind_mod_sync.models import PackBadge
+
+    pack = _sample_pack()
+    pack.badge = PackBadge(shape=2, icon=0, png="not-copied")
+    payload = pack_share_payload(pack)
+    assert "badge" not in payload
+
+
 def test_parse_rejects_empty_and_unrelated_json() -> None:
     try:
         parse_share_text("   ")

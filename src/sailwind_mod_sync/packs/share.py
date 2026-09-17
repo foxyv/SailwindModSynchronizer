@@ -22,17 +22,30 @@ _TOKEN_RE = re.compile(
 
 
 def encode_pack_share(pack: ModPack) -> str:
+    chosen: str | None = None
+    for candidate in _packs_for_share(pack):
+        for text in _share_encodings(candidate):
+            if chosen is None or len(text) < len(chosen):
+                chosen = text
+            if len(text) <= DISCORD_MESSAGE_LIMIT:
+                return text
+    return chosen or ""
+
+
+def _packs_for_share(pack: ModPack):
+    yield pack
+
+
+def _share_encodings(pack: ModPack) -> tuple[str, str, str]:
     payload = pack_share_payload(pack)
     json_body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     header = _share_header(pack)
-    fenced_json = f"{header}\n```{SHARE_FENCE}\n{json_body}\n```"
     token = _encode_token(json_body)
-    fenced_token = f"{header}\n```\n{token}\n```"
-    preferred = (fenced_json, fenced_token, token)
-    for text in preferred:
-        if len(text) <= DISCORD_MESSAGE_LIMIT:
-            return text
-    return min(preferred, key=len)
+    return (
+        f"{header}\n```{SHARE_FENCE}\n{json_body}\n```",
+        f"{header}\n```\n{token}\n```",
+        token,
+    )
 
 
 def pack_share_payload(pack: ModPack) -> dict:
@@ -44,6 +57,8 @@ def pack_share_payload(pack: ModPack) -> dict:
     }
     if pack.bepinex:
         payload["bepinex"] = pack.bepinex
+    if pack.badge is not None and not pack.badge.png:
+        payload["badge"] = pack.badge.to_dict()
     return payload
 
 

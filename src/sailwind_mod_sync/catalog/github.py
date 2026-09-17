@@ -4,14 +4,17 @@ import base64
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from sailwind_mod_sync.http_util import HttpClient, HttpError, ProgressFn
 from sailwind_mod_sync.models import ReleaseAsset, RemoteRelease, parse_mod_version
-from sailwind_mod_sync.paths import AppPaths
+from sailwind_mod_sync.paths import AppPaths, sanitize_segment
 
 log = logging.getLogger(__name__)
+
+README_CACHE_MAX_AGE_SECONDS = 60 * 60
 
 GITHUB_DOWNLOAD_HELP_TITLE = "Could not download from GitHub"
 _GITHUB_DOWNLOAD_PATH = re.compile(
@@ -442,28 +445,43 @@ def list_releases(
     raise ValueError(f"Unsupported repo: {repo_url}")
 
 
-def fetch_readme(http: HttpClient, repo_url: str, progress: ProgressFn | None = None) -> str:
+def fetch_readme(
+    http: HttpClient,
+    repo_url: str,
+    progress: ProgressFn | None = None,
+    paths: AppPaths | None = None,
+) -> str:
     ref = parse_repo_url(repo_url)
     if progress:
         progress(f"Fetching README for {ref.full_path}…")
     if ref.is_github:
         url = f"https://api.github.com/repos/{ref.full_path}/readme"
         raw = http.get_bytes(url, extra_headers={"Accept": "application/vnd.github.raw"})
-        return _decode_readme(raw)
-    if ref.is_gitlab:
+        text = _decode_readme(raw)
+    elif ref.is_gitlab:
         project = quote(ref.full_path, safe="")
         last_error: Exception | None = None
+        text = ""
         for name in ("README.md", "readme.md", "README", "README.rst"):
             url = (
                 f"https://gitlab.com/api/v4/projects/{project}/repository/files/"
                 f"{quote(name, safe='.')}/raw"
             )
             try:
-                return _decode_readme(http.get_bytes(url))
+                text = _decode_readme(http.get_bytes(url))
+                last_error = None
+                break
             except HttpError as exc:
                 last_error = exc
-        raise last_error or HttpError(f"No README found for {ref.full_path}")
-    raise ValueError(f"Unsupported repo: {repo_url}")
+        if last_error is not None:
+            raise last_error
+        if not text:
+            raise HttpError(f"No README found for {ref.full_path}")
+    else:
+        raise ValueError(f"Unsupported repo: {repo_url}")
+    if paths is not None and text:
+        save_cached_readme(paths, repo_url, text)
+    return text
 
 
 def _decode_readme(raw: bytes) -> str:
@@ -480,6 +498,61 @@ def _decode_readme(raw: bytes) -> str:
     if len(text) > 400_000:
         return text[:400_000] + "\n\n…(truncated)"
     return text
+
+
+def readme_cache_path(paths: AppPaths, repo_url: str) -> Path:
+    ref = parse_repo_url(repo_url)
+    key = sanitize_segment(f"{ref.host}_{ref.full_path}")
+    return paths.readme_dir / f"{key}.md"
+
+
+def load_cached_readme(paths: AppPaths, repo_url: str) -> str | None:
+    path = readme_cache_path(paths, repo_url)
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    text = text.replace("\x00", "").strip()
+    return text or None
+
+
+def readme_cache_age_seconds(
+    paths: AppPaths,
+    repo_url: str,
+    *,
+    now: float | None = None,
+) -> float | None:
+    path = readme_cache_path(paths, repo_url)
+    if not path.is_file():
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    clock = time.time() if now is None else now
+    return max(0.0, clock - mtime)
+
+
+def readme_cache_is_fresh(
+    paths: AppPaths,
+    repo_url: str,
+    *,
+    max_age_seconds: float = README_CACHE_MAX_AGE_SECONDS,
+    now: float | None = None,
+) -> bool:
+    age = readme_cache_age_seconds(paths, repo_url, now=now)
+    return age is not None and age <= max_age_seconds
+
+
+def save_cached_readme(paths: AppPaths, repo_url: str, text: str) -> None:
+    body = (text or "").replace("\x00", "").strip()
+    if not body:
+        return
+    path = readme_cache_path(paths, repo_url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body + "\n", encoding="utf-8")
 
 
 def _etag_path(paths: AppPaths, ref: RepoRef) -> Path:

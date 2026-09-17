@@ -148,3 +148,82 @@ def test_maximized_bool_true_round_trip(data_root: Path) -> None:
     app.processEvents()
     assert restored.isMaximized()
     restored.close()
+
+
+def test_saved_size_restored_when_screen_matches(data_root: Path) -> None:
+    app = _app()
+    root = SimpleNamespace(root=data_root)
+    window, splitter = _make_window()
+    window.resize(900, 640)
+    save_window_state(window, splitter, paths=root, screen="1920x1080")
+    window.close()
+
+    restored, restored_splitter = _make_window()
+    ok = restore_window_state(restored, restored_splitter, paths=root, screen="1920x1080")
+    assert ok is True
+    assert restored.size().width() == 900
+    assert restored.size().height() == 640
+    app.processEvents()
+    restored.close()
+
+
+def test_saved_size_ignored_when_screen_changes(data_root: Path) -> None:
+    app = _app()
+    root = SimpleNamespace(root=data_root)
+    window, splitter = _make_window()
+    window.resize(900, 640)
+    save_window_state(window, splitter, paths=root, screen="1920x1080")
+    window.close()
+
+    restored, restored_splitter = _make_window()
+    ok = restore_window_state(
+        restored,
+        restored_splitter,
+        paths=root,
+        default_size=(700, 500),
+        screen="1280x720",
+    )
+    assert ok is False
+    assert restored.width() == 700
+    assert restored.height() == 500
+    app.processEvents()
+    restored.close()
+
+
+def test_legacy_geometry_without_screen_key_still_restores(data_root: Path) -> None:
+    app = _app()
+    root = SimpleNamespace(root=data_root)
+    window, splitter = _make_window()
+    window.resize(880, 620)
+    save_window_state(window, splitter, paths=root, screen="1920x1080")
+    settings = QSettings(str(data_root / "geometry.ini"), QSettings.Format.IniFormat)
+    settings.remove("screen")
+    settings.sync()
+    window.close()
+
+    restored, restored_splitter = _make_window()
+    ok = restore_window_state(restored, restored_splitter, paths=root, screen="800x600")
+    assert ok is True
+    assert restored.width() == 880
+    assert restored.height() == 620
+    app.processEvents()
+    restored.close()
+
+
+def test_explicit_size_used_when_geometry_blob_is_invalid(data_root: Path) -> None:
+    app = _app()
+    root = SimpleNamespace(root=data_root)
+    settings = QSettings(str(data_root / "geometry.ini"), QSettings.Format.IniFormat)
+    settings.setValue("geometry", QByteArray(b"not-a-valid-geometry"))
+    settings.setValue("width", "888")
+    settings.setValue("height", "555")
+    settings.setValue("screen", "1920x1080")
+    settings.sync()
+
+    window, splitter = _make_window()
+    ok = restore_window_state(window, splitter, paths=root, screen="1920x1080")
+    assert ok is True
+    assert window.width() == 888
+    assert window.height() == 555
+    app.processEvents()
+    window.close()

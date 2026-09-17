@@ -8,7 +8,8 @@ import zipfile
 from pathlib import Path
 
 from sailwind_mod_sync.constants import DEFAULT_BEPINEX_VERSION, DEFAULT_PACK_NAME
-from sailwind_mod_sync.models import ModPack, PinnedMod
+from sailwind_mod_sync.models import ModPack, PackBadge, PinnedMod
+from sailwind_mod_sync.packs.badges import badge_for_seed, random_badge
 from sailwind_mod_sync.paths import AppPaths, sanitize_segment
 
 log = logging.getLogger(__name__)
@@ -70,7 +71,12 @@ class PackStore:
 
     def create(self, name: str, bepinex: str = DEFAULT_BEPINEX_VERSION) -> ModPack:
         pack_id = self._unique_id(slugify(name))
-        pack = ModPack(id=pack_id, name=name.strip() or pack_id, bepinex=bepinex)
+        pack = ModPack(
+            id=pack_id,
+            name=name.strip() or pack_id,
+            bepinex=bepinex,
+            badge=random_badge(),
+        )
         self.save(pack)
         self.plugins_dir(pack.id).mkdir(parents=True, exist_ok=True)
         return pack
@@ -97,6 +103,7 @@ class PackStore:
         copy = self.create(new_name, bepinex=source.bepinex)
         copy.version = source.version
         copy.mods = [PinnedMod.from_dict(mod.to_dict()) for mod in source.mods]
+        copy.badge = PackBadge.from_dict(source.badge.to_dict()) if source.badge else source.badge
         self.save(copy)
         src_instance = self.instance_dir(pack_id)
         dst_instance = self.instance_dir(copy.id)
@@ -130,6 +137,12 @@ class PackStore:
             remove_plugin_folders(self.plugins_dir(pack_id), target.plugin_folders)
         return pack
 
+    def set_badge(self, pack_id: str, badge: PackBadge) -> ModPack:
+        pack = self.get(pack_id)
+        pack.badge = badge
+        self.save(pack)
+        return pack
+
     def export_json(self, pack_id: str, dest: Path) -> Path:
         pack = self.get(pack_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -153,13 +166,15 @@ class PackStore:
                     zf.write(meta_path, f"{prefix}/metadata.json")
         return dest
 
-    def import_manifest(self, payload: dict) -> ModPack:
+    def import_manifest(self, payload: dict, *, random_if_missing: bool = False) -> ModPack:
         incoming = ModPack.from_dict(payload)
         if not incoming.name:
             incoming.name = incoming.id or "Imported"
         incoming.id = self._unique_id(slugify(incoming.name) or incoming.id or "imported")
         if not incoming.bepinex:
             incoming.bepinex = DEFAULT_BEPINEX_VERSION
+        if incoming.badge is None:
+            incoming.badge = random_badge() if random_if_missing else badge_for_seed(incoming.id)
         self.save(incoming)
         self.plugins_dir(incoming.id).mkdir(parents=True, exist_ok=True)
         return incoming
@@ -231,6 +246,12 @@ class PackStore:
         pack = ModPack.from_dict(data)
         if not pack.id:
             pack.id = path.parent.name
+        if pack.badge is None:
+            pack.badge = badge_for_seed(pack.id)
+            try:
+                self.save(pack)
+            except OSError:
+                pass
         return pack
 
     def _unique_id(self, base: str) -> str:

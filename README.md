@@ -46,7 +46,7 @@ pip install -e ".[dev,build]"
 
 Or: `python scripts/build.py`
 
-That is an **incremental** freeze: it reuses the PyInstaller cache, skips UPX, and does not write a GitHub zip. Use it while iterating on the app.
+That runs a **full PyInstaller freeze** (parallel file copy, cache reused, no GitHub zip).
 
 For a GitHub release zip:
 
@@ -61,9 +61,9 @@ That does a clean freeze, **Authenticode-signs** the freeze output with Azure Ar
 
 Signing reads `%USERPROFILE%\sms-signing\metadata.json` (copy [scripts/signing.metadata.example.json](scripts/signing.metadata.example.json) and fill in your Artifact Signing account, certificate profile, and regional endpoint). Override the path with `SMS_SIGNING_METADATA`. Install [Azure CLI](https://aka.ms/installazurecliwindows) and [Artifact Signing Client Tools](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations) (`winget install -e --id Microsoft.Azure.ArtifactSigningClientTools`). Your Azure user needs the **Artifact Signing Certificate Profile Signer** role.
 
-Pass `--skip-sign` / `-SkipSign` for an unsigned zip. Incremental builds do not sign unless you pass `--sign`.
+Pass `--skip-sign` / `-SkipSign` for an unsigned zip. Default freezes do not sign unless you pass `--sign`.
 
-Both modes compile `dist\SailwindModSynchronizer\SailwindModSynchronizer.exe`, embed `assets/icon.png` as the application icon, and create a **Sailwind Mod Synchronizer** shortcut on the Desktop unless you pass `-SkipShortcut` / `--skip-shortcut`.
+Both default and `--release` builds compile `dist\SailwindModSynchronizer\SailwindModSynchronizer.exe`, embed `assets/icon.png` as the application icon, and create a **Sailwind Mod Synchronizer** shortcut on the Desktop unless you pass `-SkipShortcut` / `--skip-shortcut`.
 
 ## License
 

@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import os
+import time
+
 from sailwind_mod_sync.catalog.github import (
     GitHubDownloadError,
     download_release_asset,
@@ -554,6 +559,155 @@ def test_fetch_readme_and_list_releases() -> None:
     assert "Crew a ship" in text
     releases = list_releases(http, "https://github.com/DiamondMiner99/sailwind-coop")
     assert [item.tag for item in releases] == ["v0.3.2"]
+
+
+def test_fetch_readme_writes_and_reuses_cache(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.github import load_cached_readme, save_cached_readme
+
+    http = _ReadmeHttp()
+    repo = "https://github.com/DiamondMiner99/sailwind-coop"
+    text = fetch_readme(http, repo, paths=paths)
+    cached = load_cached_readme(paths, repo)
+    assert cached is not None
+    assert "Crew a ship" in cached
+    assert "Crew a ship" in text
+    save_cached_readme(paths, repo, "# Cached copy\n")
+    assert load_cached_readme(paths, repo) == "# Cached copy"
+
+
+def test_fetch_remote_mod_info_caches_readme_after_download(paths: AppPaths) -> None:
+    from sailwind_mod_sync.config import AppConfig
+    from sailwind_mod_sync.manager import Manager
+
+    class _CountHttp:
+        def __init__(self) -> None:
+            self.readme_hits = 0
+
+        def get_bytes(self, url, extra_headers=None):
+            self.readme_hits += 1
+            return b"# Downloaded README\n"
+
+        def get_json(self, url, extra_headers=None, etag=None):
+            return (
+                [{"tag_name": "v1.0.0", "name": "v1.0.0", "draft": False, "assets": []}],
+                None,
+                False,
+            )
+
+        def close(self) -> None:
+            return None
+
+    repo = "https://github.com/example/fresh"
+    http = _CountHttp()
+    manager = Manager(paths=paths, config=AppConfig(), http=http)
+    try:
+        first = manager.fetch_remote_mod_info(repo)
+        second = manager.fetch_remote_mod_info(repo)
+    finally:
+        manager.close()
+    assert "Downloaded README" in first.readme
+    assert second.readme == first.readme.strip()
+    assert http.readme_hits == 1
+
+
+def test_fetch_remote_mod_info_skips_readme_http_when_cached(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.github import save_cached_readme
+    from sailwind_mod_sync.config import AppConfig
+    from sailwind_mod_sync.manager import Manager
+
+    class _CountHttp:
+        def __init__(self) -> None:
+            self.readme_hits = 0
+
+        def get_bytes(self, url, extra_headers=None):
+            self.readme_hits += 1
+            raise AssertionError("README should come from cache")
+
+        def get_json(self, url, extra_headers=None, etag=None):
+            return (
+                [{"tag_name": "v1.0.0", "name": "v1.0.0", "draft": False, "assets": []}],
+                None,
+                False,
+            )
+
+        def close(self) -> None:
+            return None
+
+    repo = "https://github.com/example/mod"
+    save_cached_readme(paths, repo, "# From disk\n")
+    http = _CountHttp()
+    manager = Manager(paths=paths, config=AppConfig(), http=http)
+    try:
+        info = manager.fetch_remote_mod_info(repo)
+    finally:
+        manager.close()
+    assert info.readme == "# From disk"
+    assert info.latest_tag == "v1.0.0"
+    assert http.readme_hits == 0
+
+
+def test_readme_cache_is_fresh_until_one_hour(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.github import (
+        README_CACHE_MAX_AGE_SECONDS,
+        readme_cache_is_fresh,
+        readme_cache_path,
+        save_cached_readme,
+    )
+
+    repo = "https://github.com/example/mod"
+    save_cached_readme(paths, repo, "# Cached\n")
+    path = readme_cache_path(paths, repo)
+    now = 1_800_000_000.0
+    fresh_mtime = now - README_CACHE_MAX_AGE_SECONDS + 1
+    stale_mtime = now - README_CACHE_MAX_AGE_SECONDS - 1
+    os.utime(path, (fresh_mtime, fresh_mtime))
+    assert readme_cache_is_fresh(paths, repo, now=now)
+    os.utime(path, (stale_mtime, stale_mtime))
+    assert not readme_cache_is_fresh(paths, repo, now=now)
+
+
+def test_fetch_remote_mod_info_refreshes_stale_readme(paths: AppPaths) -> None:
+    from sailwind_mod_sync.catalog.github import (
+        README_CACHE_MAX_AGE_SECONDS,
+        load_cached_readme,
+        readme_cache_path,
+        save_cached_readme,
+    )
+    from sailwind_mod_sync.config import AppConfig
+    from sailwind_mod_sync.manager import Manager
+
+    class _CountHttp:
+        def __init__(self) -> None:
+            self.readme_hits = 0
+
+        def get_bytes(self, url, extra_headers=None):
+            self.readme_hits += 1
+            return b"# Refreshed README\n"
+
+        def get_json(self, url, extra_headers=None, etag=None):
+            return (
+                [{"tag_name": "v1.0.0", "name": "v1.0.0", "draft": False, "assets": []}],
+                None,
+                False,
+            )
+
+        def close(self) -> None:
+            return None
+
+    repo = "https://github.com/example/stale"
+    save_cached_readme(paths, repo, "# Old README\n")
+    stale = time.time() - README_CACHE_MAX_AGE_SECONDS - 30
+    os.utime(readme_cache_path(paths, repo), (stale, stale))
+    http = _CountHttp()
+    manager = Manager(paths=paths, config=AppConfig(), http=http)
+    try:
+        info = manager.fetch_remote_mod_info(repo)
+    finally:
+        manager.close()
+    assert "Refreshed README" in info.readme
+    assert load_cached_readme(paths, repo) == "# Refreshed README"
+    assert http.readme_hits == 1
+    assert info.latest_tag == "v1.0.0"
 
 
 class _CatalogHttp:

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailwind_mod_sync.config import AppConfig
-from sailwind_mod_sync.models import CatalogEntry, LibraryEntry, ArtifactMeta, ModDetails, ModPack, PinnedMod
+from sailwind_mod_sync.models import CatalogEntry, LibraryEntry, ArtifactMeta, ModDetails, ModPack, PinnedMod, RemoteModInfo
 from sailwind_mod_sync.paths import AppPaths
 from sailwind_mod_sync.updater import AppUpdate
 from sailwind_mod_sync.ui.settings_dialog import SettingsDialog
@@ -525,6 +525,77 @@ def test_mod_details_dialog_shows_installed_versions() -> None:
         assert "v1.2.0" in texts
         assert "Crew (1.1.0)" in texts
         assert "Loading README" in dialog.readme.toPlainText()
+        assert dialog.splitter.orientation() == Qt.Orientation.Vertical
+        assert dialog.header_scroll is not None
+        sizes = dialog.splitter.sizes()
+        assert len(sizes) == 2
+        assert sizes[1] > sizes[0]
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_mod_details_dialog_shows_cached_readme() -> None:
+    app = QApplication.instance() or QApplication([])
+    details = ModDetails(
+        guid="com.example.mod",
+        version="1.1.0",
+        name="Example Mod",
+        repo="https://github.com/example/mod",
+        source_url="",
+        filename="",
+        sha256="",
+        downloaded_at="",
+        plugin_folders=[],
+        size_bytes=0,
+        installed_versions=[],
+        catalog_latest="v1.2.0",
+        pack_pins=[],
+    )
+    dialog = ModDetailsDialog(details, cached_readme="# Cached README\n\nHello.")
+    try:
+        assert "Loading README" not in dialog.readme.toPlainText()
+        assert "Cached README" in dialog.readme.toPlainText()
+        assert dialog._have_readme
+        dialog._on_remote(RemoteModInfo(latest_tag="v9.0.0", readme="# Fresh README\n"))
+        assert "Fresh README" in dialog.readme.toPlainText()
+        dialog._on_remote_fail("network down")
+        assert "Fresh README" in dialog.readme.toPlainText()
+        assert dialog.latest_release.text() == "network down"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+    app.processEvents()
+
+
+def test_mod_details_dialog_hides_empty_catalog_fields() -> None:
+    app = QApplication.instance() or QApplication([])
+    details = ModDetails(
+        guid="com.example.mod",
+        version="1.0.0",
+        name="Example Mod",
+        repo="https://github.com/example/mod",
+        source_url="",
+        filename="",
+        sha256="",
+        downloaded_at="",
+        plugin_folders=[],
+        size_bytes=0,
+        installed_versions=[],
+        catalog_latest="v1.0.0",
+        pack_pins=[],
+    )
+    dialog = ModDetailsDialog(details)
+    try:
+        texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+        assert "SHA-256" not in texts
+        assert "Downloaded" not in texts
+        assert "Source" not in texts
+        assert "v1.0.0" in texts
+        assert not dialog.status.isVisible()
+        dialog.splitter.setSizes([80, 500])
+        assert dialog.splitter.sizes()[1] > dialog.splitter.sizes()[0]
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -847,6 +918,7 @@ def test_help_menu_has_check_for_updates(paths: AppPaths) -> None:
         labels = [button.text() for button in window.findChildren(QPushButton)]
         assert "Copy" in labels
         assert "Paste" in labels
+        assert "Edit" in labels
         top_level = [action.text().replace("&", "") for action in window.menuBar().actions()]
         assert "Scan updates" not in top_level
         assert window._downloads.windowTitle() == "Download Management"
@@ -930,6 +1002,83 @@ def test_duplicate_pack_appears_and_is_selected(paths: AppPaths, monkeypatch) ->
         window.close()
         window.deleteLater()
         manager.close()
+    app.processEvents()
+
+
+def test_pack_list_shows_badge_icon(paths: AppPaths) -> None:
+    from sailwind_mod_sync.http_util import HttpClient
+    from sailwind_mod_sync.manager import Manager
+    from sailwind_mod_sync.ui.main_window import MainWindow
+
+    class _NoHttp(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def close(self) -> None:
+            return None
+
+    app = QApplication.instance() or QApplication([])
+    manager = Manager(paths=paths, config=AppConfig(check_for_updates=False), http=_NoHttp())
+    manager.catalog = [_catalog_entry()]
+    window = MainWindow(manager)
+    try:
+        item = window.pack_list.item(0)
+        assert item is not None
+        assert not item.icon().isNull()
+        assert window.pack_list.iconSize().width() == 36
+    finally:
+        window.close()
+        window.deleteLater()
+        manager.close()
+    app.processEvents()
+
+
+def test_badge_picker_composes_shape_icon_and_colors() -> None:
+    from sailwind_mod_sync.models import PackBadge
+    from sailwind_mod_sync.packs.badges import SHAPES, SYMBOLS, shape_label, symbol_label
+    from sailwind_mod_sync.ui.badge_dialog import BadgePickerDialog
+
+    app = QApplication.instance() or QApplication([])
+    start = PackBadge(shape=0, icon=0, edge=(255, 255, 255), fill=(22, 50, 79), mark=(232, 197, 71))
+    dialog = BadgePickerDialog(start, name="Crew Night")
+    try:
+        assert dialog.pack_name == "Crew Night"
+        assert len(dialog._shape_group.buttons()) == len(SHAPES)
+        assert len(dialog._icon_group.buttons()) == len(SYMBOLS)
+        dialog.name_edit.setText("  Night Watch  ")
+        assert dialog.pack_name == "Night Watch"
+        dialog._set_shape(2)
+        dialog._set_icon(4)
+        dialog._set_rgb("fill", (10, 20, 30))
+        dialog._set_rgb("ink", (9, 8, 7))
+        dialog._set_scale(80)
+        assert dialog.badge.shape == 2
+        assert dialog.badge.icon == 4
+        assert dialog.badge.fill == (10, 20, 30)
+        assert dialog.badge.ink == (9, 8, 7)
+        assert dialog.badge.scale == 80
+        assert dialog.scale_slider.value() == 80
+        assert "80%" in dialog.scale_value.text()
+        assert dialog._color_rows["fill"].rgb() == (10, 20, 30)
+        assert dialog._color_rows["edge"].rgb() == (255, 255, 255)
+        assert dialog._color_rows["ink"].rgb() == (9, 8, 7)
+        assert shape_label(2) in dialog.caption.text()
+        assert symbol_label(4) in dialog.caption.text()
+        icon = Path(__file__).resolve().parents[1] / "assets" / "icon.png"
+        dialog._pick_image_path = lambda: str(icon)
+        dialog._choose_image()
+        assert dialog.badge.png
+        assert dialog.caption.text() == "Custom image"
+        dialog._set_shape(1)
+        assert not dialog.badge.png
+        dialog._randomize()
+        assert 0 <= dialog.badge.shape < len(SHAPES)
+        assert len(dialog.badge.fill) == 3
+    finally:
+        dialog.close()
+        dialog.deleteLater()
     app.processEvents()
 
 

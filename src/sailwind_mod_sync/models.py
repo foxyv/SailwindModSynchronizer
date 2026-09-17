@@ -129,6 +129,42 @@ class PinnedMod:
 
 
 @dataclass
+class PackBadge:
+    shape: int = 0
+    icon: int = 0
+    edge: tuple[int, int, int] = (232, 197, 71)
+    fill: tuple[int, int, int] = (22, 50, 79)
+    mark: tuple[int, int, int] = (232, 197, 71)
+    ink: tuple[int, int, int] = (244, 239, 232)
+    scale: int = 56
+    png: str = ""
+
+    def to_dict(self) -> dict:
+        payload = {
+            "shape": int(self.shape),
+            "icon": int(self.icon),
+            "edge": _rgb_list(self.edge),
+            "fill": _rgb_list(self.fill),
+            "mark": _rgb_list(self.mark),
+            "ink": _rgb_list(self.ink),
+            "scale": int(self.scale),
+        }
+        if self.png:
+            payload["png"] = str(self.png)
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: object) -> PackBadge | None:
+        from sailwind_mod_sync.packs.badges import badge_from_payload
+
+        return badge_from_payload(data)
+
+
+def _rgb_list(value: tuple[int, int, int]) -> list[int]:
+    return [int(value[0]), int(value[1]), int(value[2])]
+
+
+@dataclass
 class ModPack:
     id: str
     name: str
@@ -136,9 +172,10 @@ class ModPack:
     bepinex: str = ""
     mods: list[PinnedMod] = field(default_factory=list)
     schema: int = 1
+    badge: PackBadge | None = None
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "schema": self.schema,
             "id": self.id,
             "name": self.name,
@@ -146,6 +183,9 @@ class ModPack:
             "bepinex": self.bepinex,
             "mods": [mod.to_dict() for mod in self.mods],
         }
+        if self.badge is not None:
+            payload["badge"] = self.badge.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict) -> ModPack:
@@ -158,6 +198,7 @@ class ModPack:
             version=str(data.get("version") or "1.0.0"),
             bepinex=str(data.get("bepinex") or ""),
             mods=mods,
+            badge=PackBadge.from_dict(data.get("badge")),
         )
 
     def find_mod(self, guid: str) -> PinnedMod | None:

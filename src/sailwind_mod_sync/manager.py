@@ -20,7 +20,9 @@ from sailwind_mod_sync.catalog.github import (
     fetch_readme,
     fetch_release,
     list_releases,
+    load_cached_readme,
     parse_repo_url,
+    readme_cache_is_fresh,
     release_version,
 )
 from sailwind_mod_sync.catalog.mvc import find_entry, load_cached_catalog, load_shared_catalog, refresh_catalog
@@ -550,11 +552,18 @@ class Manager:
         except Exception as exc:
             log.warning("Could not list releases for %s: %s", repo, exc)
             info.releases_error = str(exc).strip() or repr(exc)
+        cached = load_cached_readme(self.paths, repo)
+        if cached and readme_cache_is_fresh(self.paths, repo):
+            info.readme = cached
+            return info
         try:
-            info.readme = fetch_readme(self.http, repo, progress=progress)
+            info.readme = fetch_readme(self.http, repo, progress=progress, paths=self.paths)
         except Exception as exc:
             log.warning("Could not fetch README for %s: %s", repo, exc)
             info.readme_error = str(exc).strip() or repr(exc)
+            if cached:
+                info.readme = cached
+                info.readme_error = ""
         return info
 
     def install_mod(
@@ -1015,7 +1024,7 @@ class Manager:
         with log_duration(log, "import pack from clipboard"):
             if progress:
                 progress("Reading pack…")
-            pack = self.packs.import_manifest(payload)
+            pack = self.packs.import_manifest(payload, random_if_missing=True)
             log.info(
                 "Imported recipe %s (%s) with %s mod(s) from clipboard",
                 pack.id,

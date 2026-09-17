@@ -7,8 +7,8 @@ from pathlib import Path
 import subprocess
 import time
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QSize, QTimer, QUrl, Slot
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailwind_mod_sync.catalog.custom import same_repo
-from sailwind_mod_sync.catalog.github import GitHubDownloadError
+from sailwind_mod_sync.catalog.github import GitHubDownloadError, load_cached_readme
 from sailwind_mod_sync.catalog.mvc import find_entry
 from sailwind_mod_sync.constants import APP_NAME, APP_REPO, APP_VERSION
 from sailwind_mod_sync.game.backup import BackupError, inspect_bepinex_zip
@@ -37,7 +37,9 @@ from sailwind_mod_sync.game.saves import inspect_saves_zip
 from sailwind_mod_sync.manager import Manager
 from sailwind_mod_sync.models import PinnedMod, parse_mod_version, version_key
 from sailwind_mod_sync.packs.share import DISCORD_MESSAGE_LIMIT, parse_share_text
+from sailwind_mod_sync.packs.badges import render_badge
 from sailwind_mod_sync.ui.associate_dialog import AssociateCatalogDialog, AssociateTarget
+from sailwind_mod_sync.ui.badge_dialog import BadgePickerDialog
 from sailwind_mod_sync.ui.catalog_view import CatalogView
 from sailwind_mod_sync.ui.downloads_window import DownloadsWindow
 from sailwind_mod_sync.ui.hidden_mods_dialog import HiddenModsDialog
@@ -124,6 +126,7 @@ class MainWindow(QMainWindow):
         self._mod_scan_running = False
         self._mod_scan_done_at = float("-inf")
         self._mod_scan_bridge: TaskBridge | None = None
+        self._window_state_restored = False
 
         self._updates_hint = QLabel(self.statusBar())
         self._updates_hint.setStyleSheet(UPDATES_HINT_STYLE)
@@ -131,8 +134,10 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._updates_hint)
 
         self.pack_list = QListWidget()
+        self.pack_list.setIconSize(QSize(36, 36))
+        self.pack_list.setSpacing(3)
         self.pack_list.currentItemChanged.connect(self._on_pack_selected)
-        self.pack_list.itemDoubleClicked.connect(lambda _item: self._rename_pack())
+        self.pack_list.itemDoubleClicked.connect(lambda _item: self._edit_pack())
         self.pack_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.pack_list.customContextMenuRequested.connect(self._pack_context_menu)
 
@@ -149,8 +154,9 @@ class MainWindow(QMainWindow):
         new_btn.clicked.connect(self._new_pack)
         dup_btn = QPushButton("Duplicate")
         dup_btn.clicked.connect(self._duplicate_pack)
-        rename_btn = QPushButton("Rename")
-        rename_btn.clicked.connect(self._rename_pack)
+        edit_btn = QPushButton("Edit")
+        edit_btn.setToolTip("Rename this ModPack and choose its badge")
+        edit_btn.clicked.connect(self._edit_pack)
         del_btn = QPushButton("Delete")
         del_btn.clicked.connect(self._delete_pack)
         export_btn = QPushButton("Export")
@@ -167,7 +173,7 @@ class MainWindow(QMainWindow):
         pack_buttons = QHBoxLayout()
         pack_buttons.addWidget(new_btn)
         pack_buttons.addWidget(dup_btn)
-        pack_buttons.addWidget(rename_btn)
+        pack_buttons.addWidget(edit_btn)
         pack_buttons.addWidget(del_btn)
 
         io_buttons = QHBoxLayout()
@@ -283,7 +289,6 @@ class MainWindow(QMainWindow):
 
         self._reload_packs()
         self._reload_views()
-        restore_window_state(self, self.splitter, paths=self.manager.paths)
         if not self.manager.catalog:
             self._refresh_catalog()
         QTimer.singleShot(4000, self._maybe_check_updates)
@@ -294,6 +299,13 @@ class MainWindow(QMainWindow):
         if item is None:
             return None
         return item.data(Qt.ItemDataRole.UserRole)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._window_state_restored:
+            return
+        self._window_state_restored = True
+        restore_window_state(self, self.splitter, paths=self.manager.paths)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._downloads._allow_close = True
@@ -306,9 +318,11 @@ class MainWindow(QMainWindow):
         self.pack_list.blockSignals(True)
         self.pack_list.clear()
         selected = None
+        dpr = self.devicePixelRatioF()
         for pack in self.manager.packs.list_packs():
             item = QListWidgetItem(pack.name)
             item.setData(Qt.ItemDataRole.UserRole, pack.id)
+            item.setIcon(QIcon(render_badge(pack.badge, 36, dpr, seed=pack.id)))
             self.pack_list.addItem(item)
             if pack.id == current:
                 selected = item
@@ -526,21 +540,28 @@ class MainWindow(QMainWindow):
         self._reload_views()
         self.statusBar().showMessage(f"Duplicated as {pack.name}")
 
-    def _rename_pack(self) -> None:
+    def _edit_pack(self) -> None:
         pack_id = self.current_pack_id()
         if not pack_id:
             return
         pack = self.manager.packs.get(pack_id)
-        name, ok = QInputDialog.getText(self, "Rename ModPack", "Name:", text=pack.name)
-        if not ok:
+        dialog = BadgePickerDialog(pack.badge, self, seed=pack.id, pack=pack, name=pack.name)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        new_name = name.strip()
-        if not new_name or new_name == pack.name:
-            return
-        self.manager.packs.rename(pack_id, new_name)
-        self._reload_packs()
+        new_name = dialog.pack_name
+        changed: list[str] = []
+        if new_name != pack.name:
+            self.manager.packs.rename(pack_id, new_name)
+            changed.append(f"renamed to {new_name}")
+        old_badge = pack.badge.to_dict() if pack.badge else None
+        new_badge = dialog.badge.to_dict() if dialog.badge else None
+        if new_badge != old_badge:
+            self.manager.packs.set_badge(pack_id, dialog.badge)
+            changed.append("updated badge")
+        self._reload_packs(select_id=pack_id)
         self._reload_views()
-        self.statusBar().showMessage(f"Renamed to {new_name}")
+        if changed:
+            self.statusBar().showMessage("ModPack " + " and ".join(changed))
 
     def _delete_pack(self) -> None:
         pack_id = self.current_pack_id()
@@ -562,11 +583,16 @@ class MainWindow(QMainWindow):
         if item is not None:
             self.pack_list.setCurrentItem(item)
         menu = QMenu(self)
+        edit_action = menu.addAction("Edit ModPack…")
+        edit_action.setEnabled(self.current_pack_id() is not None)
+        menu.addSeparator()
         copy_action = menu.addAction("Copy ModPack to clipboard")
         paste_action = menu.addAction("Paste ModPack from clipboard")
         copy_action.setEnabled(self.current_pack_id() is not None)
         chosen = menu.exec(self.pack_list.mapToGlobal(pos))
-        if chosen == copy_action:
+        if chosen == edit_action:
+            self._edit_pack()
+        elif chosen == copy_action:
             self._copy_pack()
         elif chosen == paste_action:
             self._paste_pack()
@@ -1316,8 +1342,9 @@ class MainWindow(QMainWindow):
         self._open_mod_details(details)
 
     def _open_mod_details(self, details) -> None:
-        dialog = ModDetailsDialog(details, self)
         repo = details.repo
+        cached = load_cached_readme(self.manager.paths, repo) if repo else None
+        dialog = ModDetailsDialog(details, self, cached_readme=cached)
 
         def work(progress):
             return self.manager.fetch_remote_mod_info(repo, progress=progress)

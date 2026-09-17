@@ -8,9 +8,9 @@ Usage (from the repo root, with the project venv active):
     python scripts/build.py --console
     python scripts/build.py --release --skip-sign
 
-Default is an incremental freeze: reuse the PyInstaller cache, skip UPX, and skip
-the GitHub zip. Pass --release for a clean freeze, Azure Authenticode signing, and
-a versioned zip. Use --skip-sign for an unsigned zip.
+Default is a full PyInstaller freeze (parallel COLLECT, cache reused, no zip).
+Pass --release for a clean freeze, Azure Authenticode signing, and a versioned zip.
+Use --skip-sign for an unsigned zip.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -31,8 +33,17 @@ ICO_ICON = ASSETS / "icon.ico"
 EXE_NAME = "SailwindModSynchronizer"
 SHORTCUT_NAME = "Sailwind Mod Synchronizer.lnk"
 DIST_DIR = REPO_ROOT / "dist" / EXE_NAME
+FREEZE_ENTRY = Path(__file__).resolve().parent / "freeze_entry.py"
 SIGN_EXTENSIONS = {".exe", ".dll", ".pyd"}
 SIGN_BATCH = 16
+COLLECT_SKIP_PARTS = (
+    "qt6qml",
+    "qt6quick",
+    "qt6pdf",
+    "qt6virtualkeyboard",
+    "qtvirtualkeyboard",
+    "translations",
+)
 MIN_SIGNTOOL_VERSION = (10, 0, 22621)
 UNSUPPORTED_SIGNTOOL_VERSIONS = {(10, 0, 20348)}
 TIMESTAMP_URL = "http://timestamp.acs.microsoft.com"
@@ -79,6 +90,15 @@ QT_EXCLUDES = [
     "PySide6.QtWebView",
 ]
 
+HIDDEN_IMPORTS = [
+    "sailwind_mod_sync.app",
+    "logging.handlers",
+    "ctypes.wintypes",
+    "html",
+    "gzip",
+    "zipfile",
+]
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compile Sailwind Mod Synchronizer to an executable.")
@@ -98,6 +118,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-sign",
         action="store_true",
         help="Do not Authenticode-sign the freeze output.",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Ignored; every freeze is a full PyInstaller build.",
     )
     args = parser.parse_args(argv)
     if args.sign and args.skip_sign:
@@ -119,13 +144,18 @@ def main(argv: list[str] | None = None) -> int:
 
     _ensure_build_deps()
     write_ico(PNG_ICON, ICO_ICON)
+
     _run_pyinstaller(windowed=not args.console, clean=args.release)
+    _copy_icons()
+    if args.release:
+        print("Release freeze (clean PyInstaller cache).")
+    else:
+        print("Full freeze (PyInstaller, parallel collect, no GitHub zip).")
 
     exe = DIST_DIR / f"{EXE_NAME}.exe"
     if not exe.is_file():
         raise SystemExit(f"PyInstaller did not produce {exe}")
 
-    shutil.copy2(ICO_ICON, DIST_DIR / "icon.ico")
     print(f"Built {exe}")
 
     if args.sign:
@@ -136,9 +166,6 @@ def main(argv: list[str] | None = None) -> int:
         archive = zip_dist(DIST_DIR, REPO_ROOT / "dist" / f"{EXE_NAME}-{version}-windows.zip")
         print(f"Release zip {archive}")
         print("Upload that zip to a GitHub release so the app can auto-update.")
-    else:
-        print("Incremental freeze (cache reused, no GitHub zip).")
-        print("Use --release for a clean build and a versioned zip.")
 
     if not args.skip_shortcut:
         shortcut = create_desktop_shortcut(exe, DIST_DIR / "icon.ico")
@@ -164,6 +191,24 @@ def write_ico(png_path: Path, ico_path: Path) -> Path:
     ico_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(ico_path, format="ICO", sizes=sizes)
     return ico_path
+
+
+def _copy_icons() -> None:
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ICO_ICON, DIST_DIR / "icon.ico")
+    assets = DIST_DIR / "_internal" / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ICO_ICON, assets / "icon.ico")
+    shutil.copy2(PNG_ICON, assets / "icon.png")
+
+
+def skip_collect_path(dest_name: str) -> bool:
+    normalized = dest_name.replace("\\", "/").lower()
+    parts = tuple(normalized.split("/"))
+    if "translations" in parts:
+        return True
+    blob = "/".join(parts)
+    return any(token in blob for token in COLLECT_SKIP_PARTS if token != "translations")
 
 
 def _app_version() -> str:
@@ -403,15 +448,17 @@ def pyinstaller_args(*, windowed: bool, clean: bool) -> list[str]:
             str(ICO_ICON),
             "--paths",
             str(REPO_ROOT / "src"),
-            "--collect-submodules",
-            "sailwind_mod_sync",
+            "--collect-data",
+            "certifi",
             "--add-data",
             f"{ICO_ICON}{add_data_sep}assets",
             "--add-data",
             f"{PNG_ICON}{add_data_sep}assets",
-            str(REPO_ROOT / "src" / "sailwind_mod_sync" / "__main__.py"),
+            str(FREEZE_ENTRY),
         ]
     )
+    for module in HIDDEN_IMPORTS:
+        args.extend(["--hidden-import", module])
     for module in QT_EXCLUDES:
         args.extend(["--exclude-module", module])
     return args
@@ -420,7 +467,76 @@ def pyinstaller_args(*, windowed: bool, clean: bool) -> list[str]:
 def _run_pyinstaller(*, windowed: bool, clean: bool) -> None:
     import PyInstaller.__main__
 
+    _patch_collect()
     PyInstaller.__main__.run(pyinstaller_args(windowed=windowed, clean=clean))
+
+
+def _patch_collect() -> None:
+    from PyInstaller.building.api import COLLECT
+    from PyInstaller.building.utils import _make_clean_directory, process_collected_binary
+    from PyInstaller.compat import is_win
+
+    def assemble(self) -> None:  # type: ignore[no-untyped-def]
+        _make_clean_directory(self.name)
+        print("Building COLLECT with parallel copy…")
+        jobs: list[tuple[str, str, str]] = []
+        skipped = 0
+        for dest_name, src_name, typecode in self.toc:
+            if typecode not in {"DEPENDENCY", "SYMLINK"} and not os.path.exists(src_name):
+                continue
+            if os.pardir in os.path.normpath(dest_name).split(os.sep) or os.path.isabs(dest_name):
+                raise SystemExit(f"ERROR: attempting to store file outside of the dist directory: {dest_name!r}.")
+            if skip_collect_path(dest_name):
+                skipped += 1
+                continue
+            if typecode in ("EXECUTABLE", "PKG"):
+                dest_path = os.path.join(self.name, dest_name)
+            else:
+                dest_path = os.path.join(self.name, self.contents_directory or "", dest_name)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            if typecode in ("EXTENSION", "BINARY"):
+                src_name = process_collected_binary(
+                    src_name,
+                    dest_name,
+                    use_strip=self.strip_binaries,
+                    use_upx=self.upx_binaries,
+                    upx_exclude=self.upx_exclude,
+                    target_arch=self.target_arch,
+                    codesign_identity=self.codesign_identity,
+                    entitlements_file=self.entitlements_file,
+                    strict_arch_validation=(typecode == "EXTENSION"),
+                )
+            jobs.append((src_name, dest_path, typecode))
+
+        def copy_job(job: tuple[str, str, str]) -> None:
+            src_name, dest_path, typecode = job
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            if typecode == "SYMLINK":
+                if is_win and os.path.sep == "/":
+                    src_name = src_name.replace(os.path.sep, "\\")
+                if os.path.lexists(dest_path):
+                    os.unlink(dest_path)
+                os.symlink(src_name, dest_path)
+                return
+            if typecode == "DEPENDENCY":
+                return
+            shutil.copyfile(src_name, dest_path)
+            if typecode in ("EXTENSION", "BINARY", "EXECUTABLE") or (
+                typecode == "DATA" and os.access(src_name, os.X_OK)
+            ):
+                os.chmod(dest_path, 0o755)
+
+        workers = max(4, min(32, (os.cpu_count() or 4) * 2))
+        started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(copy_job, jobs))
+        elapsed = time.perf_counter() - started
+        print(
+            f"COLLECT copied {len(jobs)} file(s) with {workers} workers in {elapsed:.1f}s "
+            f"({skipped} skipped)."
+        )
+
+    COLLECT.assemble = assemble  # type: ignore[method-assign]
 
 
 def desktop_dir() -> Path:
