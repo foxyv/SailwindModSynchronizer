@@ -15,6 +15,11 @@
     "version": "v0.1.0"
   },
   {
+    "guid": "com.winter.customislandapi",
+    "repo": "https://github.com/winterspices/CustomIslandAPI",
+    "version": "v1.0.1"
+  },
+  {
     "guid": "com.Exocet.customitemspawner",
     "repo": "https://github.com/ExocetC3i/Sailwind_CustomItemSpawner",
     "version": "v1.1.1"

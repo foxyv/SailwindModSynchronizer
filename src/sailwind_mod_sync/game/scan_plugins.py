@@ -249,8 +249,11 @@ def apply_catalog_identity(
         return guid, None
     local = guid.lower().startswith("local.")
     if score >= AUTO_MATCH_EXACT or (local and score >= AUTO_MATCH_SCORE):
-        chosen = guid if guid in matched.guids else matched.primary_guid
-        return chosen, matched
+        if guid in matched.guids or guid == matched.primary_guid:
+            return guid, matched
+        if local:
+            return matched.primary_guid, matched
+        return guid, None
     return guid, None
 
 

@@ -290,12 +290,14 @@ class Manager:
         custom = load_custom_catalog(self.paths)
         added: list[CatalogEntry] = []
         seen: set[str] = set()
+        skipped: list[str] = []
         for unit in discovered:
             guid = (getattr(unit, "guid", None) or "").strip()
             if not guid or guid in seen:
                 continue
             existing = find_entry(self.catalog, guid)
             if existing is not None and not existing.custom:
+                skipped.append(existing.name or existing.primary_guid)
                 continue
             seen.add(guid)
             folder = (getattr(unit, "name", None) or "").strip()
@@ -328,7 +330,9 @@ class Manager:
             custom = upsert_custom_entry(custom, entry)
             added.append(entry)
         if not added:
-            raise ValueError(f"All plugins from {repo} are already in the catalog")
+            known = ", ".join(dict.fromkeys(skipped))
+            extra = f" as {known}" if known else ""
+            raise ValueError(f"All plugins from {repo} are already in the catalog{extra}")
         save_custom_catalog(self.paths, custom)
         self.catalog = merge_with_custom(load_shared_catalog(self.paths), custom)
         resolved: list[CatalogEntry] = []

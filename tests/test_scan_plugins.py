@@ -104,6 +104,53 @@ def test_apply_catalog_identity_keeps_unrelated_guid() -> None:
     assert entry is None
 
 
+def test_apply_catalog_identity_keeps_distinct_guid_on_same_repo() -> None:
+    catalog = merge_catalog(
+        [
+            {
+                "guid": "com.winter.betterports",
+                "repo": "https://github.com/winterspices/CustomIslandAPI",
+                "name": "Better Ports",
+            }
+        ],
+        [{"guid": "com.winter.betterports", "version": "v1.0.1"}],
+    )
+    guid, entry = apply_catalog_identity(
+        "CustomIslandAPI",
+        "com.winter.customislandapi",
+        catalog,
+    )
+    assert guid == "com.winter.customislandapi"
+    assert entry is None
+
+
+def test_discover_keeps_custom_island_api_guid(tmp_path: Path) -> None:
+    zip_path = tmp_path / "CustomIslandAPI.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(
+            "CustomIslandAPI/CustomIslandAPI.dll",
+            b"MZ" + b"\0" * 16 + b"com.winter.customislandapi\0",
+        )
+    catalog = merge_catalog(
+        [
+            {
+                "guid": "com.winter.betterports",
+                "repo": "https://github.com/winterspices/CustomIslandAPI",
+                "name": "Better Ports",
+            }
+        ],
+        [{"guid": "com.winter.betterports", "version": "v1.0.1"}],
+    )
+    found = discover_local_file(
+        zip_path,
+        catalog=catalog,
+        hints=("https://github.com/winterspices/CustomIslandAPI", "CustomIslandAPI.zip"),
+    )
+    assert len(found) == 1
+    assert found[0].guid == "com.winter.customislandapi"
+    assert found[0].name == "CustomIslandAPI"
+
+
 def test_scan_associates_local_folder_with_catalog(tmp_path: Path) -> None:
     plugins = tmp_path / "plugins"
     folder = plugins / "Dizzy.Gamma"

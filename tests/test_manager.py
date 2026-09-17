@@ -714,7 +714,56 @@ def test_add_catalog_repo_rejects_mvc_duplicate(paths: AppPaths, tmp_path: Path,
         manager.add_catalog_repo("https://github.com/NANDbrew/StickyFix")
         raise AssertionError("expected duplicate catalog plugin to fail")
     except ValueError as exc:
-        assert "already in the catalog" in str(exc)
+        message = str(exc)
+        assert "already in the catalog" in message
+        assert "as StickyFix" in message
+    manager.close()
+
+
+def test_add_catalog_repo_keeps_custom_island_api_off_better_ports(
+    paths: AppPaths, tmp_path: Path, monkeypatch
+) -> None:
+    from sailwind_mod_sync.models import ReleaseAsset, RemoteRelease
+
+    archive = tmp_path / "CustomIslandAPI.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "CustomIslandAPI/CustomIslandAPI.dll",
+            b"MZ" + b"\0" * 16 + b"com.winter.customislandapi\0",
+        )
+
+    class _Http(_NoHttp):
+        def download(self, url, dest, progress=None):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(archive.read_bytes())
+
+    def fake_fetch(*args, **kwargs):
+        return RemoteRelease(
+            tag="v1.0.1",
+            name="v1.0.1",
+            assets=[ReleaseAsset("CustomIslandAPI.zip", "https://example/CustomIslandAPI.zip")],
+        )
+
+    monkeypatch.setattr("sailwind_mod_sync.manager.fetch_release", fake_fetch)
+    manager = Manager(paths=paths, config=AppConfig(), http=_Http())
+    manager.catalog = [
+        CatalogEntry(
+            repo="https://github.com/winterspices/CustomIslandAPI",
+            guids=["com.winter.betterports"],
+            primary_guid="com.winter.betterports",
+            name="Better Ports",
+            latest_raw="v1.0.1",
+            latest_version="1.0.1",
+            available=True,
+        )
+    ]
+    entries = manager.add_catalog_repo("https://github.com/winterspices/CustomIslandAPI")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.primary_guid == "com.winter.customislandapi"
+    assert entry.name == "CustomIslandAPI"
+    assert entry.repo.endswith("/CustomIslandAPI")
+    assert find_entry(manager.catalog, "com.winter.customislandapi") is not None
     manager.close()
 
 

@@ -18,6 +18,12 @@
     "plugin_folders": ["BetterTables"]
   },
   {
+    "guid": "com.winter.customislandapi",
+    "repo": "https://github.com/winterspices/CustomIslandAPI",
+    "name": "Custom Island API",
+    "plugin_folders": ["CustomIslandAPI"]
+  },
+  {
     "guid": "com.Exocet.customitemspawner",
     "repo": "https://github.com/ExocetC3i/Sailwind_CustomItemSpawner",
     "name": "CustomItemSpawner",

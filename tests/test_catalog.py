@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from sailwind_mod_sync.catalog.github import (
     GitHubDownloadError,
     download_release_asset,
@@ -38,6 +41,22 @@ def test_merge_dedupes_duplicate_guids() -> None:
     sticky = by_name["StickyFix"]
     assert not sticky.available
     assert sticky.latest_version is None
+
+
+def test_app_catalog_keeps_better_ports_and_custom_island_api_separate() -> None:
+    root = Path(__file__).resolve().parents[1]
+    mod_list = json.loads((root / "catalog" / "ModList.json").read_text(encoding="utf-8"))
+    versions = json.loads((root / "catalog" / "release_versions.json").read_text(encoding="utf-8"))
+    entries = merge_catalog(mod_list, versions)
+    by_guid = {entry.primary_guid: entry for entry in entries}
+    ports = by_guid["com.winter.betterports"]
+    api = by_guid["com.winter.customislandapi"]
+    assert ports.repo.endswith("/BetterPorts")
+    assert api.repo.endswith("/CustomIslandAPI")
+    assert ports.name == "Better Ports"
+    assert api.name == "Custom Island API"
+    assert ports.latest_version == "1.1.0"
+    assert api.latest_version == "1.0.1"
 
 
 def test_merge_splits_distinct_mods_in_one_repo() -> None:
