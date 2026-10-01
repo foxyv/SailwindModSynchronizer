@@ -851,6 +851,17 @@ def test_set_mod_alias_persists_and_overrides_name(paths: AppPaths, tmp_path: Pa
     manager.close()
 
 
+def test_mod_display_name_skips_library_scan_when_folders_given(paths: AppPaths, monkeypatch) -> None:
+    manager = Manager(paths=paths, config=AppConfig(game_path="C:/Sailwind"), http=_NoHttp())
+
+    def boom() -> list:
+        raise AssertionError("list_mods should not run when plugin folders are provided")
+
+    monkeypatch.setattr(manager.library, "list_mods", boom)
+    assert manager.mod_display_name("com.example.mod", plugin_folders=["Hello"], repo="") == "Hello"
+    manager.close()
+
+
 def _catalog_with_repo() -> list[CatalogEntry]:
     return [
         CatalogEntry(

@@ -423,15 +423,16 @@ class Manager:
         catalog = find_entry(self.catalog, guid)
         folders = plugin_folders
         repo_url = repo
-        if folders is None or not repo_url:
+        if folders is None:
             for entry in self.library.list_mods():
                 if entry.guid != guid:
                     continue
-                if folders is None:
-                    folders = list(entry.meta.plugin_folders)
+                folders = list(entry.meta.plugin_folders)
                 repo_url = repo_url or entry.meta.repo
                 break
         if not repo_url:
+            repo_url = catalog.repo if catalog else ""
+        if folders is None or not repo_url:
             for pack in self.packs.list_packs():
                 pinned = pack.find_mod(guid)
                 if pinned is None:

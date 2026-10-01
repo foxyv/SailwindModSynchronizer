@@ -18,7 +18,7 @@ class LibraryStore:
 
     def has_mod(self, guid: str, version: str) -> bool:
         extracted = self.mod_extracted(guid, version)
-        if extracted.exists() and any(extracted.rglob("*.dll")):
+        if _dir_has_plugin_dll(extracted):
             return True
         zip_path = self.mod_zip_path(guid, version)
         return zip_path.exists() and zip_path.stat().st_size > 0
@@ -245,6 +245,28 @@ class LibraryStore:
                 self.delete_mod(entry.guid, entry.version)
                 removed += 1
         return removed
+
+
+def _dir_has_plugin_dll(root: Path, max_depth: int = 3) -> bool:
+    """True when a plugin DLL is in the extracted tree, without walking huge asset folders."""
+    if not root.is_dir():
+        return False
+    stack = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            children = current.iterdir()
+        except OSError:
+            continue
+        for child in children:
+            try:
+                if child.is_file() and child.suffix.lower() == ".dll":
+                    return True
+                if child.is_dir() and depth < max_depth:
+                    stack.append((child, depth + 1))
+            except OSError:
+                continue
+    return False
 
 
 def _zip_directory(source: Path, zip_path: Path) -> None:

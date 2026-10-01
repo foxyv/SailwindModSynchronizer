@@ -57,7 +57,7 @@ def _steam_install_path() -> Path | None:
             path = Path(str(value))
             if path.exists():
                 return path
-    except OSError:
+    except (OSError, ImportError):
         pass
     for candidate in (
         Path(r"C:\Program Files (x86)\Steam"),

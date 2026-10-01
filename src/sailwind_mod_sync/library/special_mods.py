@@ -39,7 +39,22 @@ def is_fail_download_guid(guid: str) -> bool:
 def coop_steam_api_present(extracted: Path) -> bool:
     if not extracted.exists():
         return False
-    return any(path.is_file() and path.name.lower() == STEAM_API_DLL for path in extracted.rglob("*"))
+    wanted = STEAM_API_DLL.lower()
+    for candidate in (extracted / STEAM_API_DLL, extracted / COOP_PLUGIN_FOLDER / STEAM_API_DLL):
+        if candidate.is_file():
+            return True
+    try:
+        for child in extracted.iterdir():
+            if child.is_file() and child.name.lower() == wanted:
+                return True
+            if not child.is_dir():
+                continue
+            nested = child / STEAM_API_DLL
+            if nested.is_file():
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def artifact_needs_refetch(store, guid: str, version: str) -> bool:

@@ -1395,3 +1395,154 @@ def test_pack_view_reports_available_updates() -> None:
     finally:
         view.deleteLater()
     app.processEvents()
+
+
+def _pack_action_labels(view: CatalogView) -> list[str]:
+    labels: list[str] = []
+    for row in range(view.table.rowCount()):
+        widget = view.table.cellWidget(row, 4)
+        if widget is None:
+            continue
+        labels.extend(
+            button.text()
+            for button in widget.findChildren(QPushButton)
+            if button.objectName() == "pack_action"
+        )
+    return labels
+
+
+def test_catalog_set_pack_updates_status_without_rebuilding_rows() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = CatalogView()
+    empty = ModPack(id="empty", name="Empty", mods=[])
+    packed = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[PinnedMod(guid="com.example.mod", version="1.2.0")],
+    )
+    try:
+        view.set_data(
+            [_catalog_entry("com.example.mod"), _catalog_entry("com.example.other")],
+            empty,
+        )
+        actions = view.table.cellWidget(0, 4)
+        assert "Add to pack" in _pack_action_labels(view)
+        view.set_pack(packed)
+        assert view.table.cellWidget(0, 4) is actions
+        assert "In pack" in _pack_action_labels(view)
+        view.hide_in_pack.setChecked(True)
+        assert view.table.rowCount() == 2
+        hidden = {
+            view.table.item(row, 1).text(): view.table.isRowHidden(row)
+            for row in range(view.table.rowCount())
+        }
+        assert hidden["com.example.mod"] is True
+        assert hidden["com.example.other"] is False
+        view.set_pack(empty)
+        assert view.table.cellWidget(0, 4) is actions
+        assert not any(view.table.isRowHidden(row) for row in range(view.table.rowCount()))
+        assert "In pack" not in _pack_action_labels(view)
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_library_set_pack_updates_add_button_without_rebuilding_rows() -> None:
+    app = QApplication.instance() or QApplication([])
+    view = LibraryView()
+    entry = _library_entry("com.example.mod", "1.2.0", 12, "Example")
+    packed = ModPack(
+        id="crew",
+        name="Crew",
+        mods=[PinnedMod(guid="com.example.mod", version="1.2.0")],
+    )
+    try:
+        view.set_entries([entry], None)
+        actions = view.table.cellWidget(0, 5)
+        add_btn = actions.findChild(QPushButton, "pack_action")
+        assert add_btn is not None
+        assert add_btn.text() == "Add to pack"
+        assert not add_btn.isEnabled()
+        view.set_pack(packed)
+        assert view.table.cellWidget(0, 5) is actions
+        assert add_btn.text() == "In pack"
+        assert not add_btn.isEnabled()
+        view.set_pack(ModPack(id="empty", name="Empty", mods=[]))
+        assert add_btn.text() == "Add to pack"
+        assert add_btn.isEnabled()
+    finally:
+        view.deleteLater()
+    app.processEvents()
+
+
+def test_selecting_another_pack_does_not_rescan_library_or_rebuild_catalog(paths: AppPaths, monkeypatch) -> None:
+    from sailwind_mod_sync.http_util import HttpClient
+    from sailwind_mod_sync.manager import Manager
+    from sailwind_mod_sync.ui.main_window import MainWindow
+
+    class _NoHttp(HttpClient):
+        def __init__(self) -> None:
+            self.token = ""
+            self._owns_client = False
+            self._client = None
+
+        def close(self) -> None:
+            return None
+
+    app = QApplication.instance() or QApplication([])
+    manager = Manager(
+        paths=paths,
+            config=AppConfig(check_for_updates=False, auto_scan_mods=False, game_path="C:/Sailwind"),
+        http=_NoHttp(),
+    )
+    manager.catalog = [_catalog_entry("com.example.mod"), _catalog_entry("com.example.other")]
+    current = manager.packs.list_packs()[0]
+    other = manager.packs.create("Night Watch")
+    manager.packs.upsert_mod(
+        current.id,
+        PinnedMod(guid="com.example.mod", version="1.2.0", repo="https://github.com/example/mod"),
+    )
+    window = MainWindow(manager)
+    try:
+        window._reload_packs(select_id=current.id)
+        window._reload_views()
+        catalog_actions = window.catalog_view.table.cellWidget(0, 4)
+        assert catalog_actions is not None
+        library_scans = {"n": 0}
+        real_list = manager.library.list_mods
+
+        def counted_list() -> object:
+            library_scans["n"] += 1
+            return real_list()
+
+        monkeypatch.setattr(manager.library, "list_mods", counted_list)
+        saves = {"n": 0}
+        real_save = manager.save_config
+
+        def counted_save() -> None:
+            saves["n"] += 1
+            return real_save()
+
+        monkeypatch.setattr(manager, "save_config", counted_save)
+        target = next(
+            window.pack_list.item(index)
+            for index in range(window.pack_list.count())
+            if window.pack_list.item(index).data(Qt.ItemDataRole.UserRole) == other.id
+        )
+        window.pack_list.setCurrentItem(target)
+        app.processEvents()
+        assert library_scans["n"] == 0
+        assert window.catalog_view.table.cellWidget(0, 4) is catalog_actions
+        assert window.current_pack_id() == other.id
+        assert manager.config.last_pack_id == other.id
+        assert saves["n"] == 1
+        assert "Add to pack" in _pack_action_labels(window.catalog_view)
+        assert "In pack" not in _pack_action_labels(window.catalog_view)
+        window._on_pack_selected()
+        assert saves["n"] == 1
+        assert library_scans["n"] == 0
+    finally:
+        window.close()
+        window.deleteLater()
+        manager.close()
+    app.processEvents()

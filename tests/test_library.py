@@ -39,6 +39,24 @@ def test_has_mod_accepts_extracted_dll_without_zip(paths: AppPaths) -> None:
     assert store.has_mod("com.example.local", "1.0.0")
 
 
+def test_has_mod_does_not_walk_extracted_tree(paths: AppPaths, monkeypatch) -> None:
+    store = LibraryStore(paths)
+    extracted = store.mod_extracted("com.example.local", "1.0.0")
+    folder = extracted / "LocalMod"
+    folder.mkdir(parents=True)
+    (folder / "LocalMod.dll").write_bytes(b"MZ")
+    decoy = extracted / "assets"
+    decoy.mkdir()
+    for index in range(40):
+        (decoy / f"{index}.txt").write_text("x")
+
+    def fail_rglob(self, pattern):
+        raise AssertionError(f"rglob({pattern!r}) walked {self}")
+
+    monkeypatch.setattr(Path, "rglob", fail_rglob)
+    assert store.has_mod("com.example.local", "1.0.0")
+
+
 def test_prune_keeps_pinned(paths: AppPaths, tmp_path: Path) -> None:
     store = LibraryStore(paths)
     for version in ("1.0.0", "1.1.0"):

@@ -44,7 +44,7 @@ class CatalogView(QWidget):
         self._filter.textChanged.connect(self._apply_filter)
         self.hide_in_pack = QCheckBox("Hide mods in current pack")
         self.hide_in_pack.setToolTip("Hide catalog rows that are already pinned on the selected pack")
-        self.hide_in_pack.toggled.connect(self._apply_filter)
+        self.hide_in_pack.toggled.connect(self._apply_pack_row_visibility)
 
         refresh = QPushButton("Refresh catalog")
         self.refresh_clicked = refresh.clicked
@@ -85,15 +85,19 @@ class CatalogView(QWidget):
         self._hidden_guids = {guid for guid in (hidden_guids or []) if guid}
         self._apply_filter()
 
+    def set_pack(self, pack: ModPack | None) -> None:
+        """Update pack-dependent status without rebuilding catalog widgets."""
+        self._pack = pack
+        self._refresh_pack_state()
+        self._apply_pack_row_visibility()
+
     def _apply_filter(self) -> None:
         query = self._filter.text().strip().lower()
-        hide_in_pack = self.hide_in_pack.isChecked()
         rows = [
             entry
             for entry in self._entries
             if _entry_matches_filter(entry, query)
             and not _entry_is_hidden(entry, self._hidden_guids)
-            and not (hide_in_pack and _pinned_for_entry(entry, self._pack) is not None)
         ]
         in_pack_bg = _in_pack_row_background(self.table)
         palette = self.table.palette()
@@ -120,6 +124,7 @@ class CatalogView(QWidget):
                     actions_layout.addWidget(repo_button(entry.repo, actions))
                     label, tip = catalog_pack_button(entry, self._pack)
                     button = QPushButton(label)
+                    button.setObjectName("pack_action")
                     button.setEnabled(entry.available and self._pack is not None)
                     if self._pack is None:
                         button.setToolTip("Select a ModPack first")
@@ -142,6 +147,52 @@ class CatalogView(QWidget):
                         _paint_row(self.table, index, in_pack_bg, actions)
         finally:
             self._syncing_table = False
+        self._apply_pack_row_visibility()
+
+    def _refresh_pack_state(self) -> None:
+        in_pack_bg = _in_pack_row_background(self.table)
+        palette = self.table.palette()
+        revealed_bg = palette.color(QPalette.ColorRole.Highlight)
+        revealed_fg = palette.color(QPalette.ColorRole.HighlightedText)
+        self._syncing_table = True
+        try:
+            for row in range(self.table.rowCount()):
+                guid = self._guid_at_row(row)
+                entry = _entry_for_mod(self._entries, guid)
+                if entry is None:
+                    continue
+                status = _catalog_status(entry, self._pack)
+                status_item = self.table.item(row, 3)
+                if status_item is not None:
+                    status_item.setText(status)
+                    status_item.setData(Qt.ItemDataRole.UserRole, status.casefold())
+                actions = self.table.cellWidget(row, 4)
+                button = _pack_action_button(actions)
+                if button is not None:
+                    label, tip = catalog_pack_button(entry, self._pack)
+                    button.setText(label)
+                    button.setEnabled(entry.available and self._pack is not None)
+                    if self._pack is None:
+                        button.setToolTip("Select a ModPack first")
+                    else:
+                        button.setToolTip(tip)
+                if actions is None:
+                    continue
+                _clear_row_paint(self.table, row, actions)
+                if entry.primary_guid == self._revealed_guid or self._revealed_guid in entry.guids:
+                    _paint_row(self.table, row, revealed_bg, actions, revealed_fg)
+                elif _pinned_for_entry(entry, self._pack) is not None:
+                    _paint_row(self.table, row, in_pack_bg, actions)
+        finally:
+            self._syncing_table = False
+
+    def _apply_pack_row_visibility(self) -> None:
+        hide = self.hide_in_pack.isChecked()
+        for row in range(self.table.rowCount()):
+            guid = self._guid_at_row(row)
+            entry = _entry_for_mod(self._entries, guid)
+            in_pack = entry is not None and _pinned_for_entry(entry, self._pack) is not None
+            self.table.setRowHidden(row, bool(hide and in_pack))
 
     def reveal_mod(self, guid: str, repo: str = "") -> bool:
         target = _entry_for_mod(self._entries, guid, repo)
@@ -279,6 +330,16 @@ class CatalogView(QWidget):
             if entry.primary_guid in item.toolTip().splitlines():
                 return entry.primary_guid
         return ""
+
+
+def _pack_action_button(actions: QWidget | None) -> QPushButton | None:
+    if actions is None:
+        return None
+    named = actions.findChild(QPushButton, "pack_action")
+    if named is not None:
+        return named
+    buttons = actions.findChildren(QPushButton)
+    return buttons[-1] if buttons else None
 
 
 def catalog_pack_button(entry: CatalogEntry, pack: ModPack | None) -> tuple[str, str]:

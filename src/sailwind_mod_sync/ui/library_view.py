@@ -110,6 +110,7 @@ class LibraryView(QWidget):
                     )
                 )
                 add_btn = QPushButton("Add to pack")
+                add_btn.setObjectName("pack_action")
                 pinned = pack.find_mod(guid) if pack else None
                 if pack is None:
                     add_btn.setEnabled(False)
@@ -137,6 +138,35 @@ class LibraryView(QWidget):
                 delete.clicked.connect(lambda _=False, g=guid, v=version: self.delete_requested.emit(g, v))
                 actions_layout.addWidget(delete)
                 self.table.setCellWidget(index, 5, actions)
+
+    def set_pack(self, pack: ModPack | None = None) -> None:
+        """Update Add-to-pack buttons without rebuilding library widgets."""
+        pack_name = pack.name if pack else ""
+        for row in range(self.table.rowCount()):
+            guid_item = self.table.item(row, 1)
+            version_item = self.table.item(row, 2)
+            if guid_item is None or version_item is None:
+                continue
+            guid, version = guid_item.text(), version_item.text()
+            actions = self.table.cellWidget(row, 5)
+            add_btn = actions.findChild(QPushButton, "pack_action") if actions is not None else None
+            if add_btn is None:
+                continue
+            pinned = pack.find_mod(guid) if pack else None
+            add_btn.setText("Add to pack")
+            if pack is None:
+                add_btn.setEnabled(False)
+                add_btn.setToolTip("Select a ModPack first")
+            elif pinned and pinned.version == version:
+                add_btn.setEnabled(False)
+                add_btn.setText("In pack")
+                add_btn.setToolTip(f"Already in {pack_name}")
+            else:
+                add_btn.setEnabled(True)
+                if pinned:
+                    add_btn.setToolTip(f"Replace {pinned.version} with {version} on {pack_name}")
+                else:
+                    add_btn.setToolTip(f"Add this version to {pack_name}")
 
     def _on_double_click(self, row: int, _column: int) -> None:
         guid_item = self.table.item(row, 1)

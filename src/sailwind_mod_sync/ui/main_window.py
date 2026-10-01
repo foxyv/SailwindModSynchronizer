@@ -127,6 +127,9 @@ class MainWindow(QMainWindow):
         self._mod_scan_done_at = float("-inf")
         self._mod_scan_bridge: TaskBridge | None = None
         self._window_state_restored = False
+        self._library_cache = None
+        self._library_version_rows: dict[str, list[tuple[str, str]]] = {}
+        self._display_names: dict[str, str] = {}
 
         self._updates_hint = QLabel(self.statusBar())
         self._updates_hint.setStyleSheet(UPDATES_HINT_STYLE)
@@ -333,26 +336,34 @@ class MainWindow(QMainWindow):
         elif self.pack_list.count():
             self.pack_list.setCurrentRow(0)
 
-    def _reload_views(self) -> None:
+    def _reload_views(self, *, pack_switch: bool = False) -> None:
         pack_id = self.current_pack_id()
         pack = self.manager.packs.get(pack_id) if pack_id else None
-        missing = {mod.guid for mod in self.manager.missing_mods(pack)}
-        library = self.manager.library.list_mods()
-        library_version_rows: dict[str, list[tuple[str, str]]] = {}
-        for item in library:
-            library_version_rows.setdefault(item.guid, []).append(
-                (item.version, item.meta.version_raw or item.version)
-            )
-        for rows in library_version_rows.values():
-            rows.sort(key=lambda pair: version_key(pair[0]), reverse=True)
-        display_names = {
-            item.guid: self.manager.mod_display_name(
-                item.guid,
-                plugin_folders=list(item.meta.plugin_folders),
-                repo=item.meta.repo,
-            )
-            for item in library
-        }
+        reuse_library = pack_switch and self._library_cache is not None
+        if reuse_library:
+            library = self._library_cache
+            library_version_rows = self._library_version_rows
+            display_names = self._display_names
+        else:
+            library = self.manager.library.list_mods()
+            library_version_rows = {}
+            for item in library:
+                library_version_rows.setdefault(item.guid, []).append(
+                    (item.version, item.meta.version_raw or item.version)
+                )
+            for rows in library_version_rows.values():
+                rows.sort(key=lambda pair: version_key(pair[0]), reverse=True)
+            display_names = {
+                item.guid: self.manager.mod_display_name(
+                    item.guid,
+                    plugin_folders=list(item.meta.plugin_folders),
+                    repo=item.meta.repo,
+                )
+                for item in library
+            }
+            self._library_cache = library
+            self._library_version_rows = library_version_rows
+            self._display_names = display_names
         if pack:
             for pinned in pack.mods:
                 display_names.setdefault(
@@ -363,9 +374,14 @@ class MainWindow(QMainWindow):
                         repo=pinned.repo,
                     ),
                 )
+        missing = {mod.guid for mod in self.manager.missing_mods(pack)}
         self.pack_view.set_pack(pack, self.manager.catalog, missing, library_version_rows, display_names)
-        self.catalog_view.set_data(self.manager.catalog, pack, self.manager.config.hidden_catalog_mods)
-        self.library_view.set_entries(library, pack, display_names)
+        if reuse_library:
+            self.catalog_view.set_pack(pack)
+            self.library_view.set_pack(pack)
+        else:
+            self.catalog_view.set_data(self.manager.catalog, pack, self.manager.config.hidden_catalog_mods)
+            self.library_view.set_entries(library, pack, display_names)
         game = self.manager.game_dir()
         if game:
             self.statusBar().showMessage(f"Game: {game}")
@@ -384,10 +400,10 @@ class MainWindow(QMainWindow):
 
     def _on_pack_selected(self) -> None:
         pack_id = self.current_pack_id()
-        if pack_id:
+        if pack_id and self.manager.config.last_pack_id != pack_id:
             self.manager.config.last_pack_id = pack_id
             self.manager.save_config()
-        self._reload_views()
+        self._reload_views(pack_switch=True)
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self.manager.config, self.manager.paths, self)
