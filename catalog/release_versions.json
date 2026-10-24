@@ -650,9 +650,9 @@
     "version": "v0.0.1"
   },
   {
-    "guid": "com.dixiecapt.sailwind.tinystove",
-    "repo": "https://github.com/Dixiecapt/Tiny_Ship_Stove",
-    "version": "0.2.0"
+    "guid": "com.dixiecapt.sailwind.betterstoves",
+    "repo": "https://github.com/Dixiecapt/Better-Stoves",
+    "version": "v1.0.0"
   },
   {
     "guid": "yourname.hatchtarp",

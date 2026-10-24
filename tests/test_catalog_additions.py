@@ -659,16 +659,21 @@ RELEASE_LAYOUTS = [
         ),
     ),
     (
-        "Dixiecapt/Tiny_Ship_Stove",
-        "com.dixiecapt.sailwind.tinystove",
-        "0.2.0",
-        "TinyStove-0.2.0-thunderstore.zip",
+        "Dixiecapt/Better-Stoves",
+        "com.dixiecapt.sailwind.betterstoves",
+        "v1.0.0",
+        "BetterStoves-1.0.0-thunderstore.zip",
         (
+            "BetterStoves.dll",
+            "Better_Stoves_Catalogue.html",
+            "Better_Stoves_Catalogue.pdf",
+            "cabinstove",
+            "galleyrange",
+            "hearthstoves",
             "icon.png",
             "manifest.json",
             "README.md",
             "tinystove",
-            "TinyStove.dll",
         ),
     ),
     (
@@ -694,13 +699,12 @@ RELEASE_LAYOUTS = [
 RELEASE_TAG_OVERRIDES = {
     # These releases put the parseable version in the name and use non-versioned tags.
     "BryanP-JP19/SailwindSeaLifeMod": "release",
-    "Dixiecapt/Tiny_Ship_Stove": "Tiny_Ship_Stove",
 }
 
 FIXED_PLUGIN_FOLDERS = {
     "winterspices/AgeOfExploration": "AgeOfExploration",
     "TheOriginOfAllEvil/The-Gaff-Pack": "Crystal Isles Sail Pack",
-    "Dixiecapt/Tiny_Ship_Stove": "TinyStove",
+    "Dixiecapt/Better-Stoves": "BetterStoves",
 }
 
 
@@ -793,7 +797,10 @@ def test_catalog_release_resolves_and_preserves_plugin_payload(
         runtime_file = (
             name.lower().endswith(".dll")
             or ("/" in name and not name.startswith(("docs/", "licenses/", "Companion/")))
-            or (repo == "Dixiecapt/Tiny_Ship_Stove" and name == "tinystove")
+            or (
+                repo == "Dixiecapt/Better-Stoves"
+                and name in {"tinystove", "cabinstove", "galleyrange", "hearthstoves"}
+            )
         )
         if runtime_file:
             assert Path(name).name in extracted_names

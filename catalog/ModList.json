@@ -780,10 +780,10 @@
     "plugin_folders": ["DockClippingPatch"]
   },
   {
-    "guid": "com.dixiecapt.sailwind.tinystove",
-    "repo": "https://github.com/Dixiecapt/Tiny_Ship_Stove",
-    "name": "Tiny Stove",
-    "plugin_folders": ["TinyStove"]
+    "guid": "com.dixiecapt.sailwind.betterstoves",
+    "repo": "https://github.com/Dixiecapt/Better-Stoves",
+    "name": "Better Stoves",
+    "plugin_folders": ["BetterStoves"]
   },
   {
     "guid": "yourname.hatchtarp",
