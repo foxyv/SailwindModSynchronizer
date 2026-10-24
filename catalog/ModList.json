@@ -748,5 +748,53 @@
     "repo": "https://github.com/Dixiecapt/Oasis-Trading-Company",
     "name": "Oasis Trading Company Estates",
     "plugin_folders": ["OasisHouseFix"]
+  },
+  {
+    "guid": "fluffyjesus.sailwind.studdingsails",
+    "repo": "https://github.com/FluffyJesus/Studding-Sails",
+    "name": "Studding Sails",
+    "plugin_folders": ["StuddingSails"]
+  },
+  {
+    "guid": "com.nandbrew.npctalker",
+    "repo": "https://github.com/NANDbrew/TalkativeNPCs",
+    "name": "Talkative NPCs",
+    "plugin_folders": ["TalkativeNPCs"]
+  },
+  {
+    "guid": "com.skeptic043.sailwind.alarmclock",
+    "repo": "https://github.com/Skeptic043/sailwind-alarm-clock",
+    "name": "Alarm Clock",
+    "plugin_folders": ["AlarmClock"]
+  },
+  {
+    "guid": "com.nandbrew.DynamicSailCenter",
+    "repo": "https://github.com/NANDbrew/DynamicSailCenter",
+    "name": "DynamicSailCenter",
+    "plugin_folders": ["DynamicSailCenter"]
+  },
+  {
+    "guid": "com.nandbrew.dockclippingpatch",
+    "repo": "https://github.com/NANDbrew/DockClippingPatch",
+    "name": "Dock Clipping Patch",
+    "plugin_folders": ["DockClippingPatch"]
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.tinystove",
+    "repo": "https://github.com/Dixiecapt/Tiny_Ship_Stove",
+    "name": "Tiny Stove",
+    "plugin_folders": ["TinyStove"]
+  },
+  {
+    "guid": "yourname.hatchtarp",
+    "repo": "https://github.com/FluffyJesus/HatchTarp",
+    "name": "Hatch Tarp",
+    "plugin_folders": ["HatchTarp"]
+  },
+  {
+    "guid": "com.keevi.performancetweaks",
+    "repo": "https://github.com/KeeviDev/SailwindPerformanceTweaks",
+    "name": "Performance Tweaks",
+    "plugin_folders": ["PerformanceTweaks"]
   }
 ]

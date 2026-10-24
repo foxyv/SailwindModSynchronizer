@@ -603,16 +603,104 @@ RELEASE_LAYOUTS = [
             "TopsailYards/TopsailYards.pdb",
         ),
     ),
+    (
+        "FluffyJesus/Studding-Sails",
+        "fluffyjesus.sailwind.studdingsails",
+        "1.0.0",
+        "StuddingSails.zip",
+        (
+            "StuddingSails/StuddingSails.deps.json",
+            "StuddingSails/StuddingSails.dll",
+            "StuddingSails/StuddingSails.pdb",
+        ),
+    ),
+    (
+        "NANDbrew/TalkativeNPCs",
+        "com.nandbrew.npctalker",
+        "v1.0.0",
+        "TalkativeNPCs.zip",
+        (
+            "TalkativeNPCs/MeanieBridge.dll",
+            "TalkativeNPCs/npctalker.assets",
+            "TalkativeNPCs/npctalker.manifest",
+            "TalkativeNPCs/TalkativeNPCs.dll",
+        ),
+    ),
+    (
+        "Skeptic043/sailwind-alarm-clock",
+        "com.skeptic043.sailwind.alarmclock",
+        "v0.2.0",
+        "AlarmClock-0.2.0.zip",
+        (
+            "manifest.json",
+            "README.md",
+            "CHANGELOG.md",
+            "LICENSE",
+            "icon.png",
+            "BepInEx/plugins/AlarmClock/AlarmClock.dll",
+        ),
+    ),
+    (
+        "NANDbrew/DynamicSailCenter",
+        "com.nandbrew.DynamicSailCenter",
+        "v0.0.2",
+        "DynamicSailCenter.dll",
+        (
+            "DynamicSailCenter.dll",
+        ),
+    ),
+    (
+        "NANDbrew/DockClippingPatch",
+        "com.nandbrew.dockclippingpatch",
+        "v0.0.1",
+        "DockClippingPatch.dll",
+        (
+            "DockClippingPatch.dll",
+        ),
+    ),
+    (
+        "Dixiecapt/Tiny_Ship_Stove",
+        "com.dixiecapt.sailwind.tinystove",
+        "0.2.0",
+        "TinyStove-0.2.0-thunderstore.zip",
+        (
+            "icon.png",
+            "manifest.json",
+            "README.md",
+            "tinystove",
+            "TinyStove.dll",
+        ),
+    ),
+    (
+        "FluffyJesus/HatchTarp",
+        "yourname.hatchtarp",
+        "1.0.0",
+        "HatchTarp.zip",
+        (
+            "HatchTarp/HatchTarp.dll",
+        ),
+    ),
+    (
+        "KeeviDev/SailwindPerformanceTweaks",
+        "com.keevi.performancetweaks",
+        "v1.0.0",
+        "PerformanceTweaks-1.0.0.zip",
+        (
+            "PerformanceTweaks/PerformanceTweaks.dll",
+        ),
+    ),
 ]
 
 RELEASE_TAG_OVERRIDES = {
-    # The version is only in the release name. The literal tag is "release".
+    # These releases put the parseable version in the name and use non-versioned tags.
     "BryanP-JP19/SailwindSeaLifeMod": "release",
+    "Dixiecapt/Tiny_Ship_Stove": "Tiny_Ship_Stove",
 }
 
 FIXED_PLUGIN_FOLDERS = {
     "winterspices/AgeOfExploration": "AgeOfExploration",
     "TheOriginOfAllEvil/The-Gaff-Pack": "Crystal Isles Sail Pack",
+    "Dixiecapt/Tiny_Ship_Stove": "TinyStove",
 }
 
 
@@ -702,8 +790,10 @@ def test_catalog_release_resolves_and_preserves_plugin_payload(
     extracted_names = {path.name for path in extracted.rglob("*") if path.is_file()}
     # All runtime binaries and asset files must survive folder filtering.
     for name in files:
-        runtime_file = name.lower().endswith(".dll") or (
-            "/" in name and not name.startswith(("docs/", "licenses/", "Companion/"))
+        runtime_file = (
+            name.lower().endswith(".dll")
+            or ("/" in name and not name.startswith(("docs/", "licenses/", "Companion/")))
+            or (repo == "Dixiecapt/Tiny_Ship_Stove" and name == "tinystove")
         )
         if runtime_file:
             assert Path(name).name in extracted_names
@@ -713,7 +803,7 @@ def test_catalog_release_resolves_and_preserves_plugin_payload(
                 assert len(dlls) == 1
                 assert (dlls[0].parent / Path(name).name).is_file()
             if repo in FIXED_PLUGIN_FOLDERS:
-                # These load bundles from a hardcoded BepInEx/plugins/<folder> path.
+                # These load bundles from a fixed BepInEx/plugins/<folder> path.
                 folder = FIXED_PLUGIN_FOLDERS[repo]
                 assert entry.plugin_folders == [folder]
                 assert (extracted / folder / Path(name).name).is_file()
