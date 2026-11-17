@@ -15,6 +15,8 @@ from sailwind_mod_sync.catalog.mvc import merge_catalog
 from sailwind_mod_sync.http_util import HttpError
 from sailwind_mod_sync.library.download import ensure_mod_artifact
 from sailwind_mod_sync.library.store import LibraryStore
+from sailwind_mod_sync.models import ModPack, PinnedMod
+from sailwind_mod_sync.packs.instance import sync_pack_plugins
 from sailwind_mod_sync.paths import AppPaths
 
 
@@ -995,6 +997,72 @@ def test_great_lakes_is_a_single_bundle():
     assert entry.name == "Great Lakes"
     assert entry.primary_guid == "com.greatlakes.navigation"
     assert entry.plugin_folders == ["GreatLakes"]
+
+
+def test_sailwind_coop_keeps_bundled_player_model(tmp_path):
+    entries = merge_catalog(*_catalog_data())
+    matching = [entry for entry in entries if entry.repo.endswith("/sailwind-coop")]
+    assert len(matching) == 1
+    entry = matching[0]
+    assert entry.plugin_folders == ["SailwindCoop", "SailwindPlayerModel"]
+
+    archive = tmp_path / "SailwindCoop.zip"
+    with zipfile.ZipFile(archive, "w") as payload:
+        payload.writestr("steam_api64.dll", b"MZ")
+        payload.writestr("BepInEx/plugins/SailwindCoop/SailwindCoop.dll", b"MZ")
+        payload.writestr(
+            "BepInEx/plugins/SailwindCoop/Facepunch.Steamworks.Win64.dll",
+            b"MZ",
+        )
+        payload.writestr(
+            "BepInEx/plugins/SailwindPlayerModel/SailwindPlayerModel.dll",
+            b"MZ",
+        )
+
+    store = LibraryStore(AppPaths(tmp_path / "app"))
+    old_meta = store.ingest_mod_zip(
+        entry.primary_guid,
+        entry.latest_version,
+        archive,
+        version_raw=entry.latest_raw,
+        repo=entry.repo,
+        source_url="https://example/SailwindCoop.zip",
+        keep_folders=["SailwindCoop"],
+    )
+    old_extracted = store.mod_extracted(old_meta.guid, old_meta.version)
+    assert not (old_extracted / "SailwindPlayerModel").exists()
+
+    meta = ensure_mod_artifact(
+        store,
+        object(),
+        guid=entry.primary_guid,
+        repo=entry.repo,
+        version=entry.latest_version,
+        version_raw=entry.latest_raw,
+        plugin_folders=entry.plugin_folders,
+    )
+
+    assert meta.plugin_folders == entry.plugin_folders
+    extracted = store.mod_extracted(meta.guid, meta.version)
+    assert (extracted / "SailwindCoop" / "SailwindCoop.dll").is_file()
+    assert (extracted / "SailwindPlayerModel" / "SailwindPlayerModel.dll").is_file()
+
+    pinned = PinnedMod(
+        guid=meta.guid,
+        version=meta.version,
+        repo=meta.repo,
+        plugin_folders=meta.plugin_folders,
+        version_raw=meta.version_raw,
+    )
+    plugins = tmp_path / "pack" / "BepInEx" / "plugins"
+    sync_pack_plugins(
+        ModPack(id="coop", name="Co-op", mods=[pinned]),
+        plugins,
+        store,
+        tmp_path / "pack",
+    )
+    assert (plugins / "SailwindCoop" / "SailwindCoop.dll").is_file()
+    assert (plugins / "SailwindPlayerModel" / "SailwindPlayerModel.dll").is_file()
 
 
 def test_rig_balance_resolves_current_guid_once():

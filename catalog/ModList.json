@@ -69,7 +69,7 @@
     "guid": "com.sailwindcoop.mod",
     "repo": "https://github.com/DiamondMiner99/sailwind-coop",
     "name": "SailwindCoop",
-    "plugin_folders": ["SailwindCoop"]
+    "plugin_folders": ["SailwindCoop", "SailwindPlayerModel"]
   },
   {
     "guid": "com.app24.sailwindconsole",
