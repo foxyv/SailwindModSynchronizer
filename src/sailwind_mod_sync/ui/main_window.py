@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from functools import wraps
 import logging
 from pathlib import Path
 import subprocess
+import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Slot
@@ -49,6 +51,7 @@ from sailwind_mod_sync.library.store import artifact_source
 from sailwind_mod_sync.log_export import export_logs
 from sailwind_mod_sync.manager import Manager
 from sailwind_mod_sync.models import PinnedMod, version_id
+from sailwind_mod_sync.packs.dependencies import DependencyPlan
 from sailwind_mod_sync.packs.modpack import BulkRollbackError
 from sailwind_mod_sync.packs.plugin_files import FileConflict
 from sailwind_mod_sync.packs.share import DISCORD_MESSAGE_LIMIT, parse_share_text
@@ -60,6 +63,7 @@ from sailwind_mod_sync.ui.background_indicator import BackgroundIndicator
 from sailwind_mod_sync.ui.launch_option_dialog import LaunchOptionDialog, ProtonPrefixConsentDialog
 from sailwind_mod_sync.ui.changelog_dialog import ChangelogDialog
 from sailwind_mod_sync.ui.export_dialog import ExportDialog, ExportKind
+from sailwind_mod_sync.ui.dependency_dialog import ask_dependencies, ask_dependents, ask_enable_required
 from sailwind_mod_sync.ui.file_conflict_dialog import ask_file_conflicts
 from sailwind_mod_sync.ui.import_plugins_dialog import ImportPluginsDialog
 from sailwind_mod_sync.ui.launch_splash import LaunchSplash
@@ -522,6 +526,10 @@ class MainWindow(QMainWindow):
         if pack_id:
             self.manager.config.last_pack_id = pack_id
             self.manager.save_config()
+            # Reading every mod's DLLs takes seconds in a large pack; do it now so removing or disabling doesn't wait.
+            threading.Thread(
+                target=self.manager.read_pack_plugins, args=(pack_id,), name="sailwind-mod-sync-plugins", daemon=True,
+            ).start()
         self._reload_views()
 
     @_unless_bulk_running
@@ -852,6 +860,21 @@ class MainWindow(QMainWindow):
             )
         else:
             self.statusBar().showMessage(f"Imported {pack.name}")
+
+    def _add_imported_dependencies(self, pack_id: str, name: str, guids: list[str]) -> None:
+        """Turn on what imported mods need, and offer to add what is missing; the import itself is done."""
+        plan = self.manager.imported_dependency_plan(pack_id, guids)
+        if not plan:
+            return
+        add = not plan.asks or self._ask_dependencies(plan, name, imported=True)
+        self._run(
+            lambda progress: self.manager.apply_dependency_plan(
+                pack_id, plan, add=add, progress=progress, resolve_conflicts=self._resolve_file_conflicts,
+                resolve_unowned_folders=self._resolve_unowned_folders,
+            ),
+            lambda _r: QTimer.singleShot(0, self._reload_views),
+            f"Adding the mods {name} needs…",
+        )
 
     @_unless_bulk_running
     def _import_game_plugins(self) -> None:
@@ -1397,6 +1420,22 @@ class MainWindow(QMainWindow):
         """Ask on the GUI thread which version to keep of files both the player and a mod update changed."""
         return self._gui_call(self._ask_file_conflicts, conflicts) or set()
 
+    def _resolve_dependencies(self, plan: DependencyPlan) -> bool | None:
+        """Ask on the GUI thread whether to add what ``plan`` needs: True adds it, False skips it, None cancels."""
+        return self._gui_call(self._ask_dependencies, plan)
+
+    def _ask_dependencies(self, plan: DependencyPlan, name: str = "", *, imported: bool = False) -> bool | None:
+        waiting = self._progress_timer.isActive()
+        self._progress_timer.stop()
+        try:
+            return ask_dependencies(
+                plan, name or self.manager.mod_display_name(plan.mod), self.manager.mod_display_name,
+                QApplication.activeModalWidget() or self, imported=imported,
+            )
+        finally:
+            if waiting:
+                self._progress_timer.start(PROGRESS_DIALOG_DELAY_MS)
+
     def _resolve_unowned_folders(self, guid: str, folders: list[str]) -> bool:
         """Ask on the GUI thread whether to move plugin folders no mod owns out of the way of ``guid``."""
         return bool(self._gui_call(self._ask_unowned_folders, guid, folders))
@@ -1441,11 +1480,20 @@ class MainWindow(QMainWindow):
         pack_id = self.current_pack_id()
         if not pack_id:
             return
-        try:
-            self.manager.packs.remove_mod(pack_id, guid)
-        except BulkRollbackError as exc:
-            QMessageBox.warning(self, "Could not remove mod", str(exc))
-            return
+        targets = [guid]
+        dependents = self.manager.dependents(pack_id, guid)
+        if dependents:
+            answer = self._ask_dependents(guid, dependents, "Remove")
+            if answer is None:
+                return
+            if answer:
+                targets.extend(dependents)
+        for target in targets:
+            try:
+                self.manager.packs.remove_mod(pack_id, target)
+            except BulkRollbackError as exc:
+                QMessageBox.warning(self, "Could not remove mod", str(exc))
+                break
         self._reload_views()
 
     @_unless_bulk_running
@@ -1453,7 +1501,49 @@ class MainWindow(QMainWindow):
         pack_id = self.current_pack_id()
         if not pack_id:
             return
-        self._start_mod_changes(pack_id, enabled, guid=guid)
+        if enabled:
+            self._enable_mod(pack_id, guid)
+            return
+        also: list[str] = []
+        dependents = self.manager.dependents(pack_id, guid, enabled_only=True)
+        if dependents:
+            answer = self._ask_dependents(guid, dependents, "Disable")
+            if answer is None:
+                # The checkbox already shows the click; put it back.
+                self.pack_view.refresh_enabled(self.manager.packs.get(pack_id))
+                return
+            if answer:
+                also = dependents
+        self._start_mod_changes(pack_id, False, guid=guid, also=also)
+
+    def _enable_mod(self, pack_id: str, guid: str) -> None:
+        """Turn ``guid`` on, asking whether to turn on what it needs too and to add what is missing."""
+        pin = self.manager.packs.get(pack_id).find_mod(guid)
+        plan = self.manager.dependency_plan(pack_id, guid, self.manager.library.pinned_key(pin))
+        name = self.manager.mod_display_name
+        if plan.enable and not ask_enable_required(name(guid), [name(item) for item in plan.enable], self):
+            plan = replace(plan, enable=[])
+        add = self._ask_dependencies(plan) if plan.asks else False
+        if add is None:
+            # The checkbox already shows the click; put it back.
+            self.pack_view.refresh_enabled(self.manager.packs.get(pack_id))
+            return
+        if not add:
+            self._start_mod_changes(pack_id, True, guid=guid, also=plan.enable)
+            return
+
+        def work(progress):
+            self.manager.apply_dependency_plan(
+                pack_id, plan, progress=progress, resolve_conflicts=self._resolve_file_conflicts,
+                resolve_unowned_folders=self._resolve_unowned_folders,
+            )
+            self.manager.set_mod_enabled(pack_id, guid, True, resolve_conflicts=self._resolve_file_conflicts)
+
+        self._run(work, lambda _r: QTimer.singleShot(0, self._reload_views), f"Adding the mods {guid} needs…")
+
+    def _ask_dependents(self, guid: str, dependents: list[str], action: str) -> bool | None:
+        name = self.manager.mod_display_name
+        return ask_dependents(name(guid), [name(item) for item in dependents], action, self)
 
     @_unless_bulk_running
     def _add_library_mod(self, guid: str, key: str) -> None:
@@ -1479,7 +1569,9 @@ class MainWindow(QMainWindow):
         same_source = pinned is not None and (not repo or not pinned.repo or same_repo(repo, pinned.repo))
         if same_source and current == chosen and library.has_mod(guid, library.pinned_key(pinned)):
             return
-        if library.has_mod(guid, library.artifact_key(guid, version, repo or (pinned.repo if pinned else ""))):
+        key = library.artifact_key(guid, version, repo or (pinned.repo if pinned else ""))
+        # Pinning a downloaded copy is quick enough to do here, unless a new mod needs other mods first.
+        if library.has_mod(guid, key) and (pinned is not None or not self.manager.dependency_plan(pack_id, guid, key)):
             try:
                 pinned = self.manager.set_pack_mod_version(
                     pack_id, guid, version, version_raw or version, repo=repo,
@@ -1503,6 +1595,7 @@ class MainWindow(QMainWindow):
                 progress=progress,
                 resolve_conflicts=self._resolve_file_conflicts,
                 resolve_unowned_folders=self._resolve_unowned_folders,
+                resolve_dependencies=self._resolve_dependencies,
             ),
             lambda _r: QTimer.singleShot(0, self._reload_views),
             f"Downloading {guid} {version_raw or version}…",
@@ -1815,6 +1908,11 @@ class MainWindow(QMainWindow):
             return
         previous = before or {}
         self.statusBar().showMessage("; ".join(_import_summary(item, previous.get(item.guid)) for item in imported))
+        # Mods new to the pack that the catalog recognized get the same check as adding them from the catalog.
+        recognized = [item.guid for item in imported if item.repo and item.guid not in previous]
+        if recognized and (pack_id := self.current_pack_id()):
+            name = self.manager.mod_display_name
+            self._add_imported_dependencies(pack_id, ", ".join(name(guid) for guid in recognized), recognized)
         self._offer_catalog_association(list(imported), pack_id=self.current_pack_id())
 
     @_unless_bulk_running
@@ -1986,7 +2084,9 @@ class MainWindow(QMainWindow):
         if pack_id:
             self._start_mod_changes(pack_id, enabled)
 
-    def _start_mod_changes(self, pack_id: str, enabled: bool, *, guid: str | None = None) -> None:
+    def _start_mod_changes(
+        self, pack_id: str, enabled: bool, *, guid: str | None = None, also: list[str] | None = None,
+    ) -> None:
         if self._busy or self._mod_scan_running:
             # A clicked checkbox has already changed visually. Restore the
             # persisted state when a scan or another operation refuses the click.
@@ -2038,7 +2138,8 @@ class MainWindow(QMainWindow):
             )
         else:
             work = lambda progress: self.manager.set_mods_enabled(
-                pack_id, enabled, guids={guid}, progress=progress, on_changed=bridge.enabled_changed.emit,
+                pack_id, enabled, guids={guid, *(also or [])}, progress=progress,
+                on_changed=bridge.enabled_changed.emit,
                 resolve_conflicts=self._resolve_file_conflicts,
             )
         try:

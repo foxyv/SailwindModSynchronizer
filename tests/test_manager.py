@@ -502,6 +502,124 @@ def test_play_non_coop_pack_clears_dll_search_path(paths: AppPaths, tmp_path: Pa
     manager.close()
 
 
+UUVR_ZIP = {
+    "plugins/Uuvr.dll": b"MZ",
+    "plugins/Assets/cursor.bmp": b"bmp",
+    "patchers/Uuvr.Patcher.dll": b"MZ",
+    "patchers/AssetsTools.NET.dll": b"MZ",
+    "patchers/classdata.tpk": b"tpk",
+}
+FLAT_SETTINGS = b"settings\x00\x00\x00\x00"
+VR_SETTINGS = b"settings\x02\x00\x00\x00\x06\x00\x00\x00OpenVR\x00\x00\x06\x00\x00\x00Oculus\x00\x00"
+
+
+def _vr_game(tmp_path: Path) -> Path:
+    """A game folder UUVR has patched: VR on in globalgamemanagers, the original kept as .bak."""
+    game = tmp_path / "Sailwind"
+    data = game / "Sailwind_Data"
+    data.mkdir(parents=True)
+    (game / "Sailwind.exe").write_bytes(b"MZ")
+    (data / "globalgamemanagers").write_bytes(VR_SETTINGS)
+    (data / "globalgamemanagers.bak").write_bytes(FLAT_SETTINGS)
+    return game
+
+
+def test_play_installs_uuvr_patcher_and_starts_from_flat_settings(paths: AppPaths, tmp_path: Path) -> None:
+    game = _vr_game(tmp_path)
+    manager = Manager(paths=paths, config=AppConfig(game_path=str(game)), http=_NoHttp())
+    _ingest_bepinex(manager, tmp_path)
+    manager.library.ingest_mod_zip(
+        "raicuparta.uuvr-legacy",
+        "0.4.0",
+        _zip_with(tmp_path / "uuvr-mono-legacy.zip", UUVR_ZIP),
+        version_raw="v0.4.0",
+        repo="https://github.com/Raicuparta/uuvr",
+        source_url="https://example/uuvr-mono-legacy.zip",
+        keep_folders=["Uuvr"],
+    )
+    pack = manager.packs.list_packs()[0]
+    pack.bepinex = "5.4.2305"
+    manager.packs.save(pack)
+    manager.packs.upsert_mod(
+        pack.id,
+        PinnedMod(
+            guid="raicuparta.uuvr-legacy",
+            version="0.4.0",
+            repo="https://github.com/Raicuparta/uuvr",
+            plugin_folders=["Uuvr"],
+        ),
+    )
+    patchers = manager.packs.instance_dir(pack.id) / "BepInEx" / "patchers"
+    data = game / "Sailwind_Data"
+    with patch("sailwind_mod_sync.manager.launch_modded"):
+        manager.play(pack.id)
+    assert (patchers / "Uuvr" / "Uuvr.Patcher.dll").is_file()
+    assert (patchers / "Uuvr" / "classdata.tpk").is_file()
+    assert (manager.packs.plugins_dir(pack.id) / "Uuvr" / "Assets" / "cursor.bmp").is_file()
+    assert not (manager.packs.plugins_dir(pack.id) / "Uuvr" / "Uuvr.Patcher.dll").exists()
+    # UUVR patches a fresh copy of the game's own file as the game starts.
+    assert (data / "globalgamemanagers").read_bytes() == FLAT_SETTINGS
+    assert not (data / "globalgamemanagers.bak").exists()
+
+    (data / "globalgamemanagers.bak").write_bytes(FLAT_SETTINGS)
+    (data / "globalgamemanagers").write_bytes(VR_SETTINGS)
+    manager.set_mod_enabled(pack.id, "raicuparta.uuvr-legacy", False)
+    with patch("sailwind_mod_sync.manager.launch_modded"):
+        manager.play(pack.id)
+    assert not (patchers / "Uuvr").exists()
+    assert (data / "globalgamemanagers").read_bytes() == FLAT_SETTINGS
+    manager.close()
+
+
+def test_uuvr_is_not_listed_but_installs_mono_legacy_from_its_known_repo(paths: AppPaths, tmp_path: Path) -> None:
+    """UUVR is only for the mods that need it: kept out of the catalog, but still downloadable by GUID."""
+    catalog = Path(__file__).resolve().parents[1] / "catalog"
+    for name in ("ModList.json", "release_versions.json"):
+        assert "raicuparta.uuvr-legacy" not in (catalog / name).read_text(encoding="utf-8")
+    tag_url = "https://github.com/Raicuparta/uuvr/releases/download/v0.4.0"
+    names = ("uuvr-il2cpp-legacy.zip", "uuvr-mono-legacy.zip", "uuvr-mono-modern.zip")
+    archive = _zip_with(tmp_path / "release.zip", {
+        **UUVR_ZIP,
+        "patchers/CopyToGame/Data/StreamingAssets/SteamVR/actions.json": b"{}",
+    })
+    downloads = []
+
+    class _Http(_NoHttp):
+        def get_json(self, url, extra_headers=None, etag=None):
+            assert url == "https://api.github.com/repos/Raicuparta/uuvr/releases/latest"
+            return {
+                "tag_name": "v0.4.0",
+                "name": "v0.4.0",
+                "html_url": "https://github.com/Raicuparta/uuvr/releases/tag/v0.4.0",
+                "assets": [{"name": name, "browser_download_url": f"{tag_url}/{name}"} for name in names],
+            }, None, False
+
+        def download(self, url, dest, progress=None):
+            downloads.append(url)
+            dest.write_bytes(archive.read_bytes())
+
+    manager = Manager(paths=paths, config=AppConfig(), http=_Http())
+    pack = manager.packs.list_packs()[0]
+    pinned = manager.install_mod(pack.id, "raicuparta.uuvr-legacy")
+    assert downloads == [f"{tag_url}/uuvr-mono-legacy.zip"]
+    assert (pinned.repo, pinned.plugin_folders) == ("https://github.com/Raicuparta/uuvr", ["Uuvr"])
+    key = manager.library.pinned_key(pinned)
+    patcher = manager.library.mod_patchers(pinned.guid, key) / "Uuvr"
+    assert (patcher / "Uuvr.Patcher.dll").is_file()
+    assert (patcher / "CopyToGame" / "Data" / "StreamingAssets" / "SteamVR" / "actions.json").is_file()
+    manager.close()
+
+
+def test_play_vanilla_turns_uuvr_vr_off(paths: AppPaths, tmp_path: Path) -> None:
+    game = _vr_game(tmp_path)
+    manager = Manager(paths=paths, config=AppConfig(game_path=str(game)), http=_NoHttp())
+    with patch("sailwind_mod_sync.manager.launch_vanilla"):
+        manager.play_vanilla()
+    assert (game / "Sailwind_Data" / "globalgamemanagers").read_bytes() == FLAT_SETTINGS
+    assert not (game / "Sailwind_Data" / "globalgamemanagers.bak").exists()
+    manager.close()
+
+
 def test_add_catalog_repo_is_kept_after_reload(paths: AppPaths, tmp_path: Path, monkeypatch) -> None:
     from sailwind_mod_sync.catalog.mvc import find_entry, load_cached_catalog
     from sailwind_mod_sync.models import ReleaseAsset, RemoteRelease
@@ -806,6 +924,36 @@ def test_local_mod_details_lists_installed_versions(paths: AppPaths, tmp_path: P
     manager.close()
 
 
+
+def test_local_mod_details_lists_declared_dependencies(paths: AppPaths, tmp_path: Path) -> None:
+    from plugin_metadata_fixture import managed_dll
+
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.catalog = [
+        CatalogEntry(repo="https://github.com/example/api", guids=["com.example.api"], primary_guid="com.example.api",
+                     name="Example API", latest_raw="v2.1.0", latest_version="2.1.0", available=True),
+    ]
+    consumer = managed_dll(
+        (("com.example.consumer", "Consumer", "1.0.0"),),
+        dependencies=(("com.example.api", "2.0.0"), ("com.example.extra", 2), ("com.example.helper", 1)),
+        incompatibilities=("com.example.old",),
+    )
+    # A plugin shipped in the same download satisfies its own dependency and isn't listed.
+    helper = managed_dll((("com.example.helper", "Helper", "1.0.0"),))
+    archive = _zip_with(tmp_path / "consumer.zip", {"Consumer/Consumer.dll": consumer, "Consumer/Helper.dll": helper})
+    manager.library.ingest_mod_zip(
+        "com.example.consumer", "1.0.0", archive, version_raw="v1.0.0",
+        repo="https://github.com/example/consumer", source_url="https://example/consumer.zip",
+    )
+
+    details = manager.local_mod_details("com.example.consumer", "1.0.0")
+
+    assert details.required_mods == ["Example API (com.example.api), 2.0.0 or newer"]
+    assert details.optional_mods == ["com.example.extra"]
+    assert details.incompatible_mods == ["com.example.old"]
+    manager.close()
+
+
 def test_catalog_mod_details_without_download(paths: AppPaths) -> None:
     manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
     manager.catalog = [
@@ -831,6 +979,7 @@ def test_catalog_mod_details_without_download(paths: AppPaths) -> None:
     assert details.catalog_latest == "v1.2.0"
     assert details.installed_versions == []
     assert details.pack_pins == [("Crew", "1.0.0")]
+    assert details.required_mods is None
     manager.close()
 
 
@@ -1657,4 +1806,154 @@ def test_pasted_repository_links_a_declared_plugin_without_renaming_it(paths: Ap
     pack = manager.packs.get(pack_id)
     assert pack.find_mod(guid).plugin_folders == ["FlightSpeed"]
     assert pack.find_mod("com.winter.ageofexploration").plugin_folders == ["AgeOfExploration"]
+    manager.close()
+
+
+def _dependency_manager(paths: AppPaths, tmp_path: Path) -> Manager:
+    """Return a manager whose catalog and library have a consumer mod that declares a hard dependency on an API."""
+    from plugin_metadata_fixture import managed_dll
+
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.catalog = []
+    for guid, name, deps in (
+        ("com.example.consumer", "Consumer", (("com.example.api", 1),)),
+        ("com.example.api", "Example API", ()),
+    ):
+        repo = f"https://github.com/example/{name.replace(' ', '')}"
+        manager.catalog.append(CatalogEntry(name=name, repo=repo, guids=[guid], primary_guid=guid,
+                                            latest_raw="v1.0.0", latest_version="1.0.0", available=True))
+        archive = _zip_with(tmp_path / f"{name}.zip", {
+            f"{name}/{name}.dll": managed_dll(((guid, name, "1.0.0"),), dependencies=deps),
+        })
+        manager.library.ingest_mod_zip(guid, "1.0.0", archive, version_raw="v1.0.0", repo=repo,
+                                       source_url=f"{repo}/releases/download/v1.0.0/{name}.zip")
+    return manager
+
+
+@pytest.mark.parametrize("answer, pinned", [
+    (True, ["com.example.api", "com.example.consumer"]),
+    (False, ["com.example.consumer"]),
+])
+def test_adding_a_mod_offers_its_required_mods(
+    paths: AppPaths, tmp_path: Path, answer: bool, pinned: list[str]
+) -> None:
+    manager = _dependency_manager(paths, tmp_path)
+    pack = manager.packs.create("Deps")
+    asked = []
+
+    manager.install_mod(pack.id, "com.example.consumer",
+                        resolve_dependencies=lambda plan: asked.append(plan) or answer)
+
+    assert [plan.download for plan in asked] == [["com.example.api"]]
+    assert [mod.guid for mod in manager.packs.get(pack.id).mods] == pinned
+    manager.close()
+
+
+def test_a_turned_off_required_mod_comes_back_on_without_asking(paths: AppPaths, tmp_path: Path) -> None:
+    manager = _dependency_manager(paths, tmp_path)
+    pack = manager.packs.create("Deps")
+    manager.add_library_mod_to_pack(pack.id, "com.example.api", "1.0.0")
+    manager.set_mod_enabled(pack.id, "com.example.api", False)
+
+    manager.install_mod(pack.id, "com.example.consumer", resolve_dependencies=lambda plan: pytest.fail("asked"))
+
+    assert manager.packs.get(pack.id).find_mod("com.example.api").enabled
+    manager.close()
+
+
+def test_cancelling_the_dependency_question_changes_nothing(paths: AppPaths, tmp_path: Path) -> None:
+    from sailwind_mod_sync.manager import ChangeCancelled
+
+    manager = _dependency_manager(paths, tmp_path)
+    pack = manager.packs.create("Deps")
+    with pytest.raises(ChangeCancelled):
+        manager.install_mod(pack.id, "com.example.consumer", resolve_dependencies=lambda plan: None)
+    assert manager.packs.get(pack.id).mods == []
+    manager.close()
+
+
+def test_imported_mods_get_what_they_need(paths: AppPaths, tmp_path: Path) -> None:
+    manager = _dependency_manager(paths, tmp_path)
+    pack = manager.packs.create("Shared")
+    manager.add_library_mod_to_pack(pack.id, "com.example.consumer", "1.0.0")
+    # Mods without a readable download, like this one, are left alone.
+    manager.packs.upsert_mod(pack.id, PinnedMod(guid="com.example.unknown", version="1.0.0"))
+
+    assert not manager.imported_dependency_plan(pack.id, ["com.example.unknown"])
+    plan = manager.imported_dependency_plan(pack.id, ["com.example.consumer"])
+    assert plan.download == ["com.example.api"]
+    manager.apply_dependency_plan(pack.id, plan)
+    assert {mod.guid for mod in manager.packs.get(pack.id).mods} >= {"com.example.api", "com.example.consumer"}
+    assert not manager.imported_dependency_plan(pack.id, ["com.example.consumer"])
+    manager.close()
+
+
+def test_helmvr_gets_uuvr_from_its_known_repo_although_uuvr_is_not_listed(paths: AppPaths, tmp_path: Path) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    manager.library.ingest_mod_zip(
+        "com.skeptic043.sailwind.helmvr", "0.10.0",
+        _zip_with(tmp_path / "HelmVR-0.10.0.zip", {"BepInEx/plugins/HelmVR/HelmVR.dll": b"MZ"}),
+        version_raw="0.10.0", repo="", source_url="HelmVR-0.10.0.zip",
+    )
+    pack = manager.packs.list_packs()[0]
+    manager.add_library_mod_to_pack(pack.id, "com.skeptic043.sailwind.helmvr", "0.10.0")
+
+    plan = manager.imported_dependency_plan(pack.id, ["com.skeptic043.sailwind.helmvr"])
+    assert (plan.download, plan.missing) == (["raicuparta.uuvr-legacy"], [])
+    assert manager.mod_display_name("raicuparta.uuvr-legacy") == "UUVR"
+    manager.close()
+
+
+def test_importing_a_vr_pack_does_not_list_uuvr_in_the_catalog(paths: AppPaths, tmp_path: Path) -> None:
+    manager = Manager(paths=paths, config=AppConfig(), http=_NoHttp())
+    source = manager.packs.create("VR")
+    for guid, repo in (
+        ("com.skeptic043.sailwind.helmvr", "https://github.com/Skeptic043/Sailwind-HelmVR"),
+        ("raicuparta.uuvr-legacy", "https://github.com/Raicuparta/uuvr"),
+    ):
+        manager.packs.upsert_mod(source.id, PinnedMod(guid=guid, version="1.0.0", repo=repo))
+    dest = tmp_path / "vr.json"
+    manager.export_pack(source.id, dest, bundle=False)
+    manager.packs.delete(source.id)
+    manager.import_pack(dest)
+    assert find_entry(manager.catalog, "com.skeptic043.sailwind.helmvr") is not None
+    assert find_entry(manager.catalog, "raicuparta.uuvr-legacy") is None
+    manager.close()
+
+
+def test_dependents_include_removal_only_rules_and_skip_disabled_pins(paths: AppPaths, tmp_path: Path) -> None:
+    manager = _dependency_manager(paths, tmp_path)
+    pack = manager.packs.create("Deps")
+    manager.add_library_mod_to_pack(pack.id, "com.example.api", "1.0.0")
+    manager.add_library_mod_to_pack(pack.id, "com.example.consumer", "1.0.0")
+    # Pins without a download still count through the rules: Mug Fix is pointless without Old Chronian.
+    manager.packs.upsert_mod(pack.id, PinnedMod(guid="com.Aquilartz.OldChronian", version="1.0.0"))
+    manager.packs.upsert_mod(pack.id, PinnedMod(guid="com.nandbrew.ChronianMugFix", version="1.0.0"))
+
+    assert manager.dependents(pack.id, "com.example.api") == ["com.example.consumer"]
+    assert manager.dependents(pack.id, "com.Aquilartz.OldChronian") == ["com.nandbrew.ChronianMugFix"]
+    manager.set_mod_enabled(pack.id, "com.example.consumer", False)
+    assert manager.dependents(pack.id, "com.example.api", enabled_only=True) == []
+    manager.close()
+
+
+def test_read_plugins_follow_a_new_download_of_the_same_version(paths: AppPaths, tmp_path: Path) -> None:
+    from plugin_metadata_fixture import managed_dll
+
+    manager = _dependency_manager(paths, tmp_path)
+    pack = manager.packs.create("Deps")
+    manager.add_library_mod_to_pack(pack.id, "com.example.api", "1.0.0")
+    manager.add_library_mod_to_pack(pack.id, "com.example.consumer", "1.0.0")
+    manager.read_pack_plugins(pack.id)
+    assert manager.dependents(pack.id, "com.example.api") == ["com.example.consumer"]
+
+    # The same release downloaded again no longer needs the API.
+    archive = _zip_with(tmp_path / "Consumer-fixed.zip", {
+        "Consumer/Consumer.dll": managed_dll((("com.example.consumer", "Consumer", "1.0.0"),)),
+    })
+    repo = "https://github.com/example/Consumer"
+    manager.library.ingest_mod_zip("com.example.consumer", "1.0.0", archive, version_raw="v1.0.0", repo=repo,
+                                   source_url=f"{repo}/releases/download/v1.0.0/Consumer.zip")
+
+    assert manager.dependents(pack.id, "com.example.api") == []
     manager.close()
