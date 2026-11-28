@@ -97,7 +97,7 @@
   },
   {
     "guid": "com.TheOriginOfAllEvil.riverSloop",
-    "repo": "https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion",
+    "repo": "https://github.com/TheOriginOfAllEvil/Shroud-Small-Standalone",
     "name": "Shattered Seas Small",
     "plugin_folders": ["Shattered Seas Small"]
   },
@@ -862,5 +862,35 @@
     "repo": "https://github.com/Skeptic043/sailwind-voyage-recorder",
     "name": "Voyage Recorder",
     "plugin_folders": ["VoyageRecorder"]
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.vittles",
+    "repo": "https://github.com/Dixiecapt/Vittles",
+    "name": "Vittles",
+    "plugin_folders": ["Vittles"]
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.basecamp",
+    "repo": "https://github.com/Dixiecapt/BaseCamp",
+    "name": "Base Camp",
+    "plugin_folders": ["BaseCamp"]
+  },
+  {
+    "guid": "com.nandbrew.throwableropes",
+    "repo": "https://github.com/NANDbrew/ThrowableRopes",
+    "name": "Throwable Ropes",
+    "plugin_folders": ["ThrowableRopes"]
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.farming",
+    "repo": "https://github.com/Dixiecapt/Merchant-Landholdings",
+    "name": "Merchant Landholdings",
+    "plugin_folders": ["SailwindFarming"]
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.martellotower",
+    "repo": "https://github.com/Dixiecapt/Tamarack-Island",
+    "name": "Tamarack Island & Dalkey Reef",
+    "plugin_folders": ["TamarackIsland"]
   }
 ]

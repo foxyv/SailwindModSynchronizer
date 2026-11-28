@@ -81,8 +81,8 @@
   },
   {
     "guid": "com.TheOriginOfAllEvil.riverSloop",
-    "repo": "https://github.com/TheOriginOfAllEvil/Shattered-Seas-Expansion",
-    "version": "b1.2.8"
+    "repo": "https://github.com/TheOriginOfAllEvil/Shroud-Small-Standalone",
+    "version": "1.4.0"
   },
   {
     "guid": "com.TheOriginOfAllEvil.ShatteredSeas",
@@ -718,5 +718,30 @@
     "guid": "com.skeptic043.sailwind.voyagerecorder",
     "repo": "https://github.com/Skeptic043/sailwind-voyage-recorder",
     "version": "v0.1.8"
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.vittles",
+    "repo": "https://github.com/Dixiecapt/Vittles",
+    "version": "v1.0.64"
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.basecamp",
+    "repo": "https://github.com/Dixiecapt/BaseCamp",
+    "version": "v0.1.3-beta"
+  },
+  {
+    "guid": "com.nandbrew.throwableropes",
+    "repo": "https://github.com/NANDbrew/ThrowableRopes",
+    "version": "v0.0.1"
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.farming",
+    "repo": "https://github.com/Dixiecapt/Merchant-Landholdings",
+    "version": "v0.37.8-beta"
+  },
+  {
+    "guid": "com.dixiecapt.sailwind.martellotower",
+    "repo": "https://github.com/Dixiecapt/Tamarack-Island",
+    "version": "v0.22.11-beta"
   }
 ]

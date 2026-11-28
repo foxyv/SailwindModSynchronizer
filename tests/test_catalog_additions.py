@@ -904,6 +904,110 @@ RELEASE_LAYOUTS = [
             "BepInEx/plugins/VoyageRecorder/VoyageRecorder.dll",
         ),
     ),
+    (
+        "TheOriginOfAllEvil/Shroud-Small-Standalone",
+        "com.TheOriginOfAllEvil.riverSloop",
+        "1.4.0",
+        "Shattered.Seas.Small_v1.4.0.zip",
+        (
+            "Shattered Seas Small/ShatteredSeas_ScriptHandler.dll",
+            "Shattered Seas Small/shroud small",
+            "Shattered Seas Small/shroud small.manifest",
+            "Shattered Seas Small/ShroudSmallPatcher.dll",
+        ),
+    ),
+    (
+        "Dixiecapt/Vittles",
+        "com.dixiecapt.sailwind.vittles",
+        "v1.0.64",
+        "Vittles-1.0.64-thunderstore.zip",
+        (
+            "manifest.json",
+            "icon.png",
+            "README.md",
+            "CHANGELOG.md",
+            "LICENSE",
+            "THIRD_PARTY.md",
+            "Vittling_Book.pdf",
+            "Vittles.dll",
+            "vittles",
+        ),
+    ),
+    (
+        "Dixiecapt/BaseCamp",
+        "com.dixiecapt.sailwind.basecamp",
+        "v0.1.3-beta",
+        "BaseCamp-0.1.3-thunderstore.zip",
+        (
+            "manifest.json",
+            "icon.png",
+            "README.md",
+            "CHANGELOG.md",
+            "LICENSE",
+            "Base Camp - Guide.pdf",
+            "BaseCamp.dll",
+        ),
+    ),
+    (
+        "NANDbrew/ThrowableRopes",
+        "com.nandbrew.throwableropes",
+        "v0.0.1",
+        "ThrowableRopes.dll",
+        (
+            "ThrowableRopes.dll",
+        ),
+    ),
+    (
+        "Dixiecapt/Merchant-Landholdings",
+        "com.dixiecapt.sailwind.farming",
+        "v0.37.8-beta",
+        "MerchantLandholdings-0.37.8-thunderstore.zip",
+        (
+            "manifest.json",
+            "icon.png",
+            "README.md",
+            "CHANGELOG.md",
+            "LICENSE",
+            "Merchant Landholdings - Land Planner Manual.pdf",
+            "Merchant Landholdings - Real Estate Catalogue.pdf",
+            "SailwindFarming.dll",
+            "aestraabbey",
+            "cliffcut",
+        ),
+    ),
+    (
+        "Dixiecapt/Tamarack-Island",
+        "com.dixiecapt.sailwind.martellotower",
+        "v0.22.11-beta",
+        "TamarackIslandAndDalkeyReef-0.22.11-thunderstore.zip",
+        (
+            "manifest.json",
+            "icon.png",
+            "README.md",
+            "CHANGELOG.md",
+            "LICENSE",
+            "Tamarack Island & Dalkey Reef - The Tamarack Book.pdf",
+            "TamarackIsland.dll",
+            "martellotower",
+            "dalkey/CREDITS.txt",
+            "dalkey/dalkey_calm.bin",
+            "dalkey/dalkey_detail.png",
+            "dalkey/dalkey_ground.bin",
+            "dalkey/dalkey_ground.png",
+            "dalkey/dalkey_info.txt",
+            "dalkey/dalkey_larch.txt",
+            "dalkey/dalkey_larch_masks.png",
+            "dalkey/dalkey_reef.txt",
+            "dalkey/dalkey_reef_tide.bin",
+            "dalkey/dalkey_rocks.txt",
+            "dalkey/dalkey_rocks_south.txt",
+            "dalkey/dalkey_splat.png",
+            "dalkey/dalkey_splat2.png",
+            "dalkey/dalkey_splat_south.png",
+            "dalkey/dalkey_splat_south2.png",
+            "dalkey/dalkey_splat_west.png",
+        ),
+    ),
 ]
 
 RELEASE_TAG_OVERRIDES = {
@@ -929,6 +1033,12 @@ RUNTIME_LAYOUT_FOLDERS = {
     "FluffyJesus/Sail-Customization": "SailEmblems",
     "Viking-D-Mike/SailorsKeepsakes": "AdornosMod",
     "Skeptic043/sailwind-voyage-recorder": "VoyageRecorder",
+    "TheOriginOfAllEvil/Shroud-Small-Standalone": "Shattered Seas Small",
+    "Dixiecapt/Vittles": "Vittles",
+    "Dixiecapt/BaseCamp": "BaseCamp",
+    "NANDbrew/ThrowableRopes": "ThrowableRopes",
+    "Dixiecapt/Merchant-Landholdings": "SailwindFarming",
+    "Dixiecapt/Tamarack-Island": "TamarackIsland",
 }
 
 
@@ -1037,6 +1147,12 @@ def test_catalog_release_resolves_and_preserves_plugin_payload(
                 repo == "Dixiecapt/Better-Stoves"
                 and name in {"tinystove", "cabinstove", "galleyrange", "hearthstoves"}
             )
+            or (repo == "Dixiecapt/Vittles" and name == "vittles")
+            or (
+                repo == "Dixiecapt/Merchant-Landholdings"
+                and name in {"aestraabbey", "cliffcut"}
+            )
+            or (repo == "Dixiecapt/Tamarack-Island" and name == "martellotower")
         )
         if runtime_file:
             assert Path(name).name in extracted_names
